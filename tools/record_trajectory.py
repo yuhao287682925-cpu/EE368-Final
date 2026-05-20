@@ -11,10 +11,12 @@ class TrajectoryRecorder:
         # 帧名称（注意：需要根据Kinova实际的TF树进行修改）
         # 'base_link' 通常是机械臂底座
         # 'tool_frame' 或 'end_effector_link' 通常是末端
+        # 从 Startup.md 分析出你的默认 robot_name 是 my_gen3_lite
+        # 但因为 prefix 为空，TF树的帧名应该没有前缀，通常为 'base_link' 和 'end_effector_link' 或 'tool_frame'
         self.base_frame = rospy.get_param('~base_frame', 'base_link')
-        self.tool_frame = rospy.get_param('~tool_frame', 'tool_frame') 
+        self.tool_frame = rospy.get_param('~tool_frame', 'end_effector_link') # Gen3 lite 默认末端通常是 end_effector_link
         self.output_file = rospy.get_param('~output_file', 'actual_trajectory.csv')
-        self.record_rate = rospy.get_param('~rate', 50) # 记录频率 50Hz
+        self.record_rate = rospy.get_param('~rate', 40) # 你的 base_feedback 频率是 40Hz (从 Startup.md 获取)
         
         self.listener = tf.TransformListener()
         
