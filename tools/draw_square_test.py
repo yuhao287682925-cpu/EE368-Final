@@ -22,9 +22,9 @@ def main():
         rospy.logerr("如果你看到这个报错，请按 Ctrl+C 退出，并在终端运行: export ROS_NAMESPACE=/my_gen3_lite 然后再重新运行脚本！")
         return
 
-    # 设置极慢的运行速度，确保实机第一次画图安全 (10% 速度)
-    move_group.set_max_velocity_scaling_factor(0.1)
-    move_group.set_max_acceleration_scaling_factor(0.1)
+    # 已经测试成功，稍微提速至 20% 安全速度
+    move_group.set_max_velocity_scaling_factor(0.2)
+    move_group.set_max_acceleration_scaling_factor(0.2)
 
     print("\n【操作指南】")
     print("你不必再单独把 XYZ 发给我了！这个脚本会自动获取机械臂现在的姿态。")
@@ -38,8 +38,8 @@ def main():
     print(f"\n✅ 当前起点已自动获取: X={current_pose.position.x:.3f}, Y={current_pose.position.y:.3f}, Z={current_pose.position.z:.3f}")
     
     waypoints = []
-    # 我们先画一个小一点的，边长 5 厘米 (0.05 米) 的正方形
-    side_length = 0.05 
+    # 加大图形尺寸，边长 10 厘米 (0.1 米) 的正方形
+    side_length = 0.1 
     
     wpose = copy.deepcopy(current_pose)
     
@@ -94,9 +94,9 @@ def main():
     print("正在为几何轨迹添加时间参数化(计算速度与加速度)...")
     # 【核心修复】compute_cartesian_path 只生成了空间的点，没有时间戳和速度！
     # Kinova 底层驱动极其严格，如果没有合理的速度和加速度，直接拒绝执行并报 CONTROL_FAILED。
-    # 我们必须调用 retime_trajectory 按照 10% 的安全限速为其添加动力学参数。
+    # 我们调用 retime_trajectory 按照 20% 的速度为其添加动力学参数。
     try:
-        plan = move_group.retime_trajectory(move_group.get_current_state(), plan, 0.1, 0.1)
+        plan = move_group.retime_trajectory(move_group.get_current_state(), plan, 0.2, 0.2)
     except Exception as e:
         print(f"\n⚠️ 警告：尝试调用 retime_trajectory 失败 ({e})，将尝试直接发送。")
 
