@@ -92,13 +92,27 @@ def main():
     print(f"\n✅ 轨迹几何规划成功！一共生成了 {len(plan.joint_trajectory.points)} 个平滑的插值控制点。")
     
     print("正在为几何轨迹添加时间参数化(计算速度与加速度)...")
-    # 【核心修复】compute_cartesian_path 只生成了空间的点，没有时间戳和速度！
-    # Kinova 底层驱动极其严格，如果没有合理的速度和加速度，直接拒绝执行并报 CONTROL_FAILED。
-    # 我们调用 retime_trajectory 按照 20% 的速度为其添加动力学参数。
     try:
         plan = move_group.retime_trajectory(move_group.get_current_state(), plan, 0.2, 0.2)
     except Exception as e:
         print(f"\n⚠️ 警告：尝试调用 retime_trajectory 失败 ({e})，将尝试直接发送。")
+
+    # ================= 新增：保存理论轨迹供对比 =================
+    import csv
+    import os
+    theo_csv = os.path.join(os.path.dirname(__file__), '..', 'theoretical_trajectory.csv')
+    try:
+        with open(theo_csv, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['x', 'y', 'z'])
+            # 我们保存正方形的5个顶点作为理论线条
+            for wp in waypoints:
+                writer.writerow([wp.position.x, wp.position.y, wp.position.z])
+        print(f"📄 已自动将本次画图的【理论参考航点】保存至: {theo_csv}")
+        print("   (之后跑 analyze_error.py 时，这就是完美笔直的参考线！)")
+    except Exception as e:
+        print(f"无法保存理论轨迹: {e}")
+    # =========================================================
 
     input("🔥 请准备好你的手！将手放在急停按钮上，按【回车键】立刻开始物理绘制！")
 
