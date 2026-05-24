@@ -59,21 +59,30 @@ def main():
     wpose.position.y -= side_length
     waypoints.append(copy.deepcopy(wpose))
 
-    print("\n正在用 MoveIt 规划严格保持笔尖垂直的直线笛卡尔轨迹...")
+    print("\n正在通过原生 ROS 服务调用规划笛卡尔轨迹 (绕过 MoveIt Python 包装器底层 Bug)...")
     
-    # 【Bug 修复】绕过由于你的虚拟机内 MoveIt 版本不匹配导致的 Boost.Python C++ 签名报错
-    # 你的 moveit_commander (Python) 传了 3 个参数，但底层的 C++ 库只接受 (list, double, bool)
-    import moveit_commander.conversions as conversions
-    import moveit_msgs.msg
-    ser_path = [conversions.msg_to_string(p) for p in waypoints]
+    from moveit_msgs.srv import GetCartesianPath, GetCartesianPathRequest
     
+    # 绕过 Bug 的终极方案：直接调用 MoveIt 的后端 ROS 服务，纯 Python 通信，不经过任何 C++ 包装器！
+    rospy.wait_for_service('compute_cartesian_path', timeout=5.0)
     try:
-        # 直接调用 C++ 包装器，传入 eef_step=0.005 和 avoid_collisions=True (bool)
-        (ser_plan_str, fraction) = move_group._g.compute_cartesian_path(ser_path, 0.005, True)
-        plan = moveit_msgs.msg.RobotTrajectory()
-        plan.deserialize(ser_plan_str)
-    except Exception as e:
-        print(f"底层 API 规划失败: {e}")
+        cartesian_srv = rospy.ServiceProxy('compute_cartesian_path', GetCartesianPath)
+        req = GetCartesianPathRequest()
+        req.header.frame_id = move_group.get_planning_frame()
+        req.header.stamp = rospy.Time.now()
+        req.group_name = group_name
+        req.link_name = move_group.get_end_effector_link()
+        req.waypoints = waypoints
+        req.max_step = 0.005
+        req.jump_threshold = 0.0
+        req.avoid_collisions = True
+        
+        res = cartesian_srv(req)
+        plan = res.solution
+        fraction = res.fraction
+        
+    except rospy.ServiceException as e:
+        print(f"\n❌ 服务调用失败，请确认 MoveIt 是否完全启动: {e}")
         return
 
     if fraction < 0.95:
