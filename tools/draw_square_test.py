@@ -60,8 +60,21 @@ def main():
     waypoints.append(copy.deepcopy(wpose))
 
     print("\n正在用 MoveIt 规划严格保持笔尖垂直的直线笛卡尔轨迹...")
-    # eef_step = 0.005 (插值精度 5mm), jump_threshold = 0.0 (禁用关节跳跃)
-    (plan, fraction) = move_group.compute_cartesian_path(waypoints, 0.005, 0.0)
+    
+    # 【Bug 修复】绕过由于你的虚拟机内 MoveIt 版本不匹配导致的 Boost.Python C++ 签名报错
+    # 你的 moveit_commander (Python) 传了 3 个参数，但底层的 C++ 库只接受 (list, double, bool)
+    import moveit_commander.conversions as conversions
+    import moveit_msgs.msg
+    ser_path = [conversions.msg_to_string(p) for p in waypoints]
+    
+    try:
+        # 直接调用 C++ 包装器，传入 eef_step=0.005 和 avoid_collisions=True (bool)
+        (ser_plan_str, fraction) = move_group._g.compute_cartesian_path(ser_path, 0.005, True)
+        plan = moveit_msgs.msg.RobotTrajectory()
+        plan.deserialize(ser_plan_str)
+    except Exception as e:
+        print(f"底层 API 规划失败: {e}")
+        return
 
     if fraction < 0.95:
         print(f"\n⚠️ 警告：轨迹规划不完整，只算出了 {fraction*100:.2f}% 的路线。")
