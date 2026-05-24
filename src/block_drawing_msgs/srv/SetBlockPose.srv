@@ -1,0 +1,24 @@
+# SetBlockPose.srv
+# 设置物块在机械臂基坐标系下的位姿、尺寸、以及各面的图案投影偏移
+
+geometry_msgs/Pose   block_pose    # T_block_base (物块底面中心→基座)
+float64 L                          # 物块长 [m]
+float64 W                          # 物块宽 [m]
+float64 H                          # 物块高 [m]
+
+# 各面图案投影偏移 [mm], 相对于面中心
+# face_offset_u[i]: 沿面内 u 轴偏移, face_offset_v[i]: 沿面内 v 轴偏移
+# i=0顶面, 1前面, 2右面, 3后面, 4左面
+# 默认全0 = 图案中心对齐面中心
+float64[5] face_offset_u          # 每面 u 向偏移 [mm] (独立面模式)
+float64[5] face_offset_v          # 每面 v 向偏移 [mm] (独立面模式)
+
+# 跨面连续模式: 图案中心在块表面上的锚点
+# center_face = -1 表示使用独立面模式 (每个面独立画)
+# center_face = 0~4 时使用连续模式, 图案从此面此点出发, 超界自动跨邻面
+int32    center_face              # -1=独立面模式, 0~4=连续模式起始面
+float64  center_u_mm              # 图案中心 u 坐标 [mm]
+float64  center_v_mm              # 图案中心 v 坐标 [mm]
+---
+bool success
+string message

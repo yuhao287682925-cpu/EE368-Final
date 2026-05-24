@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>system_integrator</name>
+  <version>0.1.0</version>
+  <description>System integration: launch files, experiment scripts, and evaluation tools</description>
+
+  <maintainer email="user@example.com">User</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>block_drawing_msgs</exec_depend>
+  <exec_depend>trajectory_generator</exec_depend>
+  <exec_depend>robot_executor</exec_depend>
+  <exec_depend>force_controller</exec_depend>
+  <exec_depend>kortex_driver</exec_depend>
+  <exec_depend>kortex_gazebo</exec_depend>
+  <exec_depend>rosbag</exec_depend>
+</package>

@@ -1,0 +1,23 @@
+# Drawing parameters for robot_executor (Module B)
+
+drawing:
+  speed: 0.03              # Drawing speed [m/s]
+  free_speed: 0.15         # Free-space motion speed [m/s]
+  lift_height: 0.05        # Pen lift height [m]
+  pen_tip_offset: 0.12     # Flange-to-pen-tip distance [m]
+  eef_step: 0.001          # Cartesian path discretization step [m]
+
+planner:
+  planning_time: 2.0       # MoveIt planning time limit [s]
+  planner_id: "RRTConnectkConfigDefault"
+
+workspace:
+  min_x: -0.5
+  max_x:  0.8
+  min_y: -0.5
+  max_y:  0.5
+  min_z:  0.2
+
+robot:
+  name: "my_gen3_lite"
+  home_joints: [0.0, 0.26, 3.14, -1.96, 0.0, 1.57]

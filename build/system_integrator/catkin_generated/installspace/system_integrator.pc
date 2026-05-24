@@ -1,0 +1,8 @@
+prefix=/home/huang/catkin_ws/install
+
+Name: system_integrator
+Description: Description of system_integrator
+Version: 0.1.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<launch>
+  <!--
+    start_executor.launch
+    Starts the robot executor node (Module B).
+    Requires: kortex_driver and MoveIt move_group already running.
+  -->
+  <arg name="robot_name" default="my_gen3_lite"/>
+
+  <node name="executor_node" pkg="robot_executor" type="executor_node"
+        output="screen">
+    <param name="robot_name" value="$(arg robot_name)"/>
+    <rosparam file="$(find robot_executor)/config/drawing_params.yaml" command="load"/>
+  </node>
+</launch>

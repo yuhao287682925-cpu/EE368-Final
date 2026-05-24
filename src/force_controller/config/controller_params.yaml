@@ -1,0 +1,9 @@
+# Force controller parameters (Module C)
+
+force_control:
+  desired_force: 1.0         # Desired pen-tip pressure [N]
+  Kp: 0.0003                 # Proportional gain [m/N]
+  Kd: 0.00005                # Derivative damping
+  dz_max: 0.0005             # Max per-step correction [m]
+  control_rate: 100          # Control loop frequency [Hz]
+  contact_threshold: 0.3     # Min force to detect contact [N]

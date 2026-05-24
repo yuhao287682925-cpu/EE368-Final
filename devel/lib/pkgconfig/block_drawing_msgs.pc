@@ -1,0 +1,8 @@
+prefix=/home/huang/catkin_ws/devel
+
+Name: block_drawing_msgs
+Description: Description of block_drawing_msgs
+Version: 0.1.0
+Cflags: -I/home/huang/catkin_ws/devel/include
+Libs: -L${prefix}/lib 
+Requires: message_runtime actionlib_msgs geometry_msgs std_msgs

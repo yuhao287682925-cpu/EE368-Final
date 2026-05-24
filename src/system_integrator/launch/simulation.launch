@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<launch>
+  <!--
+    simulation.launch
+    Starts the full system in Gazebo simulation mode.
+
+    Usage:
+      roslaunch system_integrator simulation.launch
+  -->
+  <include file="$(find system_integrator)/launch/full_system.launch">
+    <arg name="use_gazebo" value="true"/>
+    <arg name="start_rviz" value="true"/>
+    <arg name="ip_address" value="192.168.1.10"/>
+  </include>
+</launch>

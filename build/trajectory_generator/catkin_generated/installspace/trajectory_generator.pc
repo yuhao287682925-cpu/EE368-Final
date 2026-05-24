@@ -1,0 +1,8 @@
+prefix=/home/huang/catkin_ws/install
+
+Name: trajectory_generator
+Description: Description of trajectory_generator
+Version: 0.1.0
+Cflags: -I${prefix}/include
+Libs: -L${prefix}/lib -ltrajectory_generator
+Requires: roscpp block_drawing_msgs geometry_msgs std_msgs tf2 tf2_eigen eigen_conversions visualization_msgs

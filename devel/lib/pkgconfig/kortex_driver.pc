@@ -1,0 +1,8 @@
+prefix=/home/huang/catkin_ws/devel
+
+Name: kortex_driver
+Description: Description of kortex_driver
+Version: 2.2.2
+Cflags: -I/home/huang/catkin_ws/devel/include
+Libs: -L${prefix}/lib 
+Requires: actionlib_msgs

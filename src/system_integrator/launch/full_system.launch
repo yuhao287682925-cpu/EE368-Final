@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="ip_address" default="192.168.1.10"/>
+  <arg name="robot_name"   default="my_gen3_lite"/>
+  <arg name="use_gazebo"   default="false"/>
+  <arg name="start_rviz"   default="true"/>
+
+  <node name="trajectory_server" pkg="trajectory_generator"
+        type="trajectory_server" output="screen">
+    <param name="pen_tip_offset"  value="0.12"/>
+    <param name="lift_height"     value="0.05"/>
+    <param name="default_block_L" value="0.20"/>
+    <param name="default_block_W" value="0.20"/>
+    <param name="default_block_H" value="0.15"/>
+  </node>
+
+  <!-- Gazebo mode -->
+  <group if="$(arg use_gazebo)">
+    <include file="$(find kortex_gazebo)/launch/spawn_kortex_robot.launch">
+      <arg name="arm"                 value="gen3_lite"/>
+      <arg name="dof"                 value="6"/>
+      <arg name="gripper"             value="gen3_lite_2f"/>
+      <arg name="robot_name"          value="$(arg robot_name)"/>
+      <arg name="start_rviz"          value="$(arg start_rviz)"/>
+      <arg name="start_delay_seconds" value="10"/>
+      <arg name="use_sim_time"        value="true"/>
+    </include>
+
+    <group ns="$(arg robot_name)">
+      <node name="executor_node" pkg="robot_executor" type="executor_node"
+            output="screen">
+        <param name="robot_name" value="$(arg robot_name)"/>
+        <rosparam file="$(find robot_executor)/config/drawing_params.yaml" command="load"/>
+      </node>
+      <node name="controller_node" pkg="force_controller"
+            type="controller_node" output="screen">
+        <param name="robot_name" value="$(arg robot_name)"/>
+        <rosparam file="$(find force_controller)/config/controller_params.yaml" command="load"/>
+      </node>
+    </group>
+  </group>
+
+  <!-- Real hardware mode -->
+  <group unless="$(arg use_gazebo)">
+    <include file="$(find kortex_driver)/launch/kortex_driver.launch">
+      <arg name="arm"         value="gen3_lite"/>
+      <arg name="dof"         value="6"/>
+      <arg name="gripper"     value="gen3_lite_2f"/>
+      <arg name="ip_address"  value="$(arg ip_address)"/>
+      <arg name="start_rviz"  value="$(arg start_rviz)"/>
+    </include>
+
+    <!-- kortex_driver.launch already includes move_group in namespace.
+         Our nodes go in the same namespace to find robot_description + controllers. -->
+    <group ns="$(arg robot_name)">
+      <node name="executor_node" pkg="robot_executor" type="executor_node"
+            output="screen">
+        <param name="robot_name" value="$(arg robot_name)"/>
+        <rosparam file="$(find robot_executor)/config/drawing_params.yaml" command="load"/>
+      </node>
+      <node name="controller_node" pkg="force_controller"
+            type="controller_node" output="screen">
+        <param name="robot_name" value="$(arg robot_name)"/>
+        <rosparam file="$(find force_controller)/config/controller_params.yaml" command="load"/>
+      </node>
+    </group>
+  </group>
+
+</launch>

@@ -1,0 +1,7 @@
+# ExecuteDrawing.srv
+# 模块B服务: 启动绘画执行 (使用 Action 模式时为简单触发)
+
+bool start    # true=启动, false=取消
+---
+bool success
+string message

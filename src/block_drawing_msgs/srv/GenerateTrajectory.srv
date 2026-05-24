@@ -1,0 +1,12 @@
+# GenerateTrajectory.srv
+# 模块A服务: SVG/图案 → 轨迹序列
+
+string   svg_file                          # SVG文件路径 (空=使用内置测试图案)
+float64  target_width_mm                   # 目标图案宽度 [mm]
+float64  target_height_mm                  # 目标图案高度 [mm]
+int32[]  faces                             # 要画的面的列表 (0~4)
+string   test_pattern                      # 内置测试图案类型: "square" / "circle" / "star" (svg_file为空时生效)
+---
+block_drawing_msgs/SurfaceTrajectory[] trajectories  # 每个面对应一条轨迹
+bool     success
+string   message
