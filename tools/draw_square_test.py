@@ -87,11 +87,19 @@ def main():
 
     if fraction < 0.95:
         print(f"\n⚠️ 警告：轨迹规划不完整，只算出了 {fraction*100:.2f}% 的路线。")
-        print("原因可能是：画图区域超出了机械臂的运动极限边界，或者当前的关节角度由于奇异点被卡住了。")
-        print("建议：把箱子往机械臂中心挪一点，或者改变一下当前的肘部关节角度，再重新运行。")
         return
         
-    print(f"\n✅ 轨迹规划完美成功！一共生成了 {len(plan.joint_trajectory.points)} 个平滑的插值控制点。")
+    print(f"\n✅ 轨迹几何规划成功！一共生成了 {len(plan.joint_trajectory.points)} 个平滑的插值控制点。")
+    
+    print("正在为几何轨迹添加时间参数化(计算速度与加速度)...")
+    # 【核心修复】compute_cartesian_path 只生成了空间的点，没有时间戳和速度！
+    # Kinova 底层驱动极其严格，如果没有合理的速度和加速度，直接拒绝执行并报 CONTROL_FAILED。
+    # 我们必须调用 retime_trajectory 按照 10% 的安全限速为其添加动力学参数。
+    try:
+        plan = move_group.retime_trajectory(move_group.get_current_state(), plan, 0.1, 0.1)
+    except Exception as e:
+        print(f"\n⚠️ 警告：尝试调用 retime_trajectory 失败 ({e})，将尝试直接发送。")
+
     input("🔥 请准备好你的手！将手放在急停按钮上，按【回车键】立刻开始物理绘制！")
 
     # 执行绘画
