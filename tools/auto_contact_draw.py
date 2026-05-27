@@ -167,15 +167,29 @@ class AutoContactDrawer:
         contact_detected = False
         loop_cnt = 0
         
+        # 引入接触判定滑动窗口 (40Hz 下 10个周期约 0.25 秒)
+        force_window = []
+        window_size = 10
+        
         while not rospy.is_shutdown():
             loop_cnt += 1
+            
+            # 滑动窗口维护
+            force_window.append(self.current_fz)
+            if len(force_window) > window_size:
+                force_window.pop(0)
+            
+            # 计算窗口内的平均估计力
+            avg_force = np.mean(force_window) if len(force_window) >= window_size else 0.0
+            
             if loop_cnt % 15 == 0:
-                rospy.loginfo(f"⏳ 正在直线下探... 当前估计接触力 Fz: {self.current_fz:.2f} N (判定阈值: 7.0 N)")
+                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 平均 Fz(0.25s): {avg_force:.2f} N (阈值: 7.0 N)")
                 
-            # 仅使用估计接触力 Fz 进行接触判定 (因为笔直向下时自转第六关节受力臂为0，无力矩变化)
-            if self.current_fz >= 7.0:
+            # 使用平均估计力进行稳定接触判定
+            if len(force_window) >= window_size and avg_force >= 7.0:
                 rospy.loginfo(f"🟢 判定触及纸箱表面！")
-                rospy.loginfo(f"   >> 估计接触力 (Fz): {self.current_fz:.2f} N (阈值: 7.0 N)")
+                rospy.loginfo(f"   >> 窗口内平均接触力 (Avg Fz): {avg_force:.2f} N (阈值: 7.0 N)")
+                rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fz:.2f} N")
                 
                 # 发送 10 次 0 速度，确保驱动层刹停
                 for _ in range(10):
