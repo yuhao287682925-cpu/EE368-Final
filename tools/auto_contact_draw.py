@@ -206,8 +206,9 @@ class AutoContactDrawer:
         非对称三段式 PD 力控律
         """
         if not self.calibrated or self.current_fz < self.contact_threshold:
-            # 未进入接触状态时，重置力控
+            # 未进入接触状态时，重置力控状态与位移量
             self.prev_force_error = 0.0
+            self.z_offset = 0.0
             return self.z_offset
             
         force_error = self.target_force - self.current_fz
@@ -304,21 +305,17 @@ class AutoContactDrawer:
                 
             quat = get_orientation_for_normal(wp['nx'], wp['ny'], wp['nz'])
             
-            # 计算目标 3D 绝对坐标
-            if wp['phase'] in ['draw', 'touch_down']:
-                self.update_force_control(dt)
-            else:
-                self.z_offset = 0.0
-                self.prev_force_error = 0.0
-                
+            # 位置控制的目标点 XY
             target_x = wp['x']
             target_y = wp['y']
-            target_z = wp['z_nominal'] + self.z_offset
             
             k_pos = 1.2
             
             # 位置伺服走点循环
             while not rospy.is_shutdown():
+                # 在控制周期内部，基于当前的力控偏移 z_offset 动态更新目标高度
+                target_z = wp['z_nominal'] + self.z_offset
+                
                 dx = target_x - self.current_x
                 dy = target_y - self.current_y
                 dz = target_z - self.current_z
@@ -348,7 +345,7 @@ class AutoContactDrawer:
                     else:
                         v_z_comp = -(self.kp_down * force_error + self.kd_down * d_error)
                         
-                    # 虚拟限位限制
+                    # 虚拟限位限制与累加量更新
                     self.z_offset += v_z_comp * dt
                     if self.z_offset >= self.max_z_offset and v_z_comp > 0:
                         v_z_comp = 0.0
@@ -358,7 +355,14 @@ class AutoContactDrawer:
                     
                     cmd.twist.linear_z = np.clip(v_z_comp, -0.02, 0.02)
                 else:
-                    cmd.twist.linear_z = np.clip(k_pos * dz, -0.015, 0.015)
+                    # 如果发生脱离（力小于 4N）或处于抬笔区，立即将偏置 z_offset 归零，重置力控状态，迫使机械臂向下压紧重新寻面
+                    self.z_offset = 0.0
+                    self.prev_force_error = 0.0
+                    
+                    # 重新计算无偏置时的标称高度差，发布下探贴紧速度
+                    target_z_nominal = wp['z_nominal']
+                    dz_nominal = target_z_nominal - self.current_z
+                    cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.015, 0.015)
                 
                 # 保持姿态稳定，角速度设为 0
                 cmd.twist.angular_x = 0.0
