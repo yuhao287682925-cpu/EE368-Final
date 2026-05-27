@@ -165,12 +165,16 @@ class AutoContactDrawer:
         stop_cmd.reference_frame = 3
         
         contact_detected = False
+        loop_cnt = 0
         
         while not rospy.is_shutdown():
-            # 双重保险判定接触：手腕关节力矩跳变且 Z 轴估计力足够
-            if self.wrist_torque >= self.wrist_torque_threshold and self.current_fz >= 3.0:
+            loop_cnt += 1
+            if loop_cnt % 15 == 0:
+                rospy.loginfo(f"⏳ 正在直线下探... 当前估计接触力 Fz: {self.current_fz:.2f} N (判定阈值: 3.0 N)")
+                
+            # 仅使用估计接触力 Fz 进行接触判定 (因为笔直向下时自转第六关节受力臂为0，无力矩变化)
+            if self.current_fz >= 3.0:
                 rospy.loginfo(f"🟢 判定触及纸箱表面！")
-                rospy.loginfo(f"   >> 末端力矩 (Joint_6 Effort): {self.wrist_torque:.3f} N.m (阈值: {self.wrist_torque_threshold} N.m)")
                 rospy.loginfo(f"   >> 估计接触力 (Fz): {self.current_fz:.2f} N (阈值: 3.0 N)")
                 
                 # 发送 10 次 0 速度，确保驱动层刹停
