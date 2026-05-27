@@ -60,9 +60,11 @@ class AutoContactDrawer:
                                    [-math.pi/2, 0, 235/1000, 0-math.pi/2]])
         self.arm_model = NLinkArm(dh_params_list)
         
-        # 非对称力控核心参数
+        # 核心力控参数
         self.target_force = 7.0       # 目标接触力 7N
         self.contact_threshold = 4.0  # 接触与寻面判定阈值 4.0N
+        self.wrist_torque_threshold = 0.06 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.06 N.m
+        
         self.kp_up = 0.005            # 过度按压抬升增益 (快速向上抬)
         self.kd_up = 0.001
         self.kp_down = 0.0008         # 接触不足下压增益 (缓慢向下压)
@@ -78,7 +80,13 @@ class AutoContactDrawer:
         self.calibration_samples = []
         self.calibrated = False
         self.current_fz = 0.0
+        self.wrist_torque = 0.0
         self.prev_force_error = 0.0
+        
+        # 实时笛卡尔坐标缓存 (由正运动学在回调中解算更新，频率极高)
+        self.current_x = 0.0
+        self.current_y = 0.0
+        self.current_z = 0.0
         
         # 订阅关节状态话题以实时进行力矩估计与位姿解算
         rospy.Subscriber("/my_gen3_lite/joint_states", JointState, self.joint_states_callback)
@@ -97,7 +105,7 @@ class AutoContactDrawer:
         
     def joint_states_callback(self, msg):
         """
-        基于雅可比转置和消除零偏后的力估计
+        基于雅可比转置和消除零偏后的力估计，同时更新实时正运动学末端位置
         """
         thetas = msg.position[0:6]
         torques = msg.effort[0:6]
@@ -105,10 +113,21 @@ class AutoContactDrawer:
         if len(thetas) < 6 or len(torques) < 6:
             return
             
+        # 1. 求解末端正运动学位置 (高频更新，不需要卡顿的 TF)
+        tool_pose = self.arm_model.forward_kinematics(thetas)
+        self.current_x = tool_pose[0]
+        self.current_y = tool_pose[1]
+        self.current_z = tool_pose[2]
+            
+        # 2. 求解基础雅可比矩阵并计算估计力
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
         raw_fz = tool_force[2]
         
+        # 提取第 6 关节 (末端手腕) 的力矩绝对值
+        self.wrist_torque = abs(torques[5])
+        
+        # 自动零点校准
         if not self.calibrated:
             self.calibration_samples.append(raw_fz)
             if len(self.calibration_samples) >= 40:
@@ -117,13 +136,45 @@ class AutoContactDrawer:
                 rospy.loginfo(f"✅ 传感器零点校准完成！消除重力偏差 (Z Bias): {self.fz_bias:.2f} N")
             return
             
+        # 估计末端 Z 轴向力（减去零点偏差并取绝对值）
         self.current_fz = abs(raw_fz - self.fz_bias)
         self.force_fz_pub.publish(Float64(self.current_fz))
 
+    def align_wrist_to_vertical(self):
+        """
+        强制将机械臂设置到完全垂直朝下的旋转角
+        """
+        rospy.loginfo("🔄 正在调整末端手腕至完全垂直姿态...")
+        # 获取当前位姿
+        current_pose = self.move_group.get_current_pose().pose
+        
+        # 设置目标姿态为垂直 (默认 RPY 姿态四元数)
+        vertical_quat = get_orientation_for_normal(0, 0, 1) # 垂直向下
+        
+        target_pose = Pose()
+        target_pose.position.x = current_pose.position.x
+        target_pose.position.y = current_pose.position.y
+        target_pose.position.z = current_pose.position.z
+        target_pose.orientation = vertical_quat
+        
+        self.move_group.set_pose_target(target_pose)
+        success = self.move_group.go(wait=True)
+        self.move_group.stop()
+        self.move_group.clear_pose_targets()
+        
+        if success:
+            rospy.loginfo("✅ 末端手腕已成功翻转到完全垂直朝下姿态！")
+        else:
+            rospy.logerr("❌ 手腕翻转垂直姿态规划失败！请检查是否有碰撞或奇异点。")
+            raise RuntimeError("手腕姿态初始化失败")
+
     def run_auto_touchdown(self):
         """
-        全自动下探寻面：控制机械臂以 5mm/s 速度向下移动，直到接触力达 4N 时停止
+        全自动双阈值下探寻面：控制机械臂向下慢移，直到第6关节力矩跳变且Z轴力达标时刹车
         """
+        # 1. 首先确保手腕完全垂直
+        self.align_wrist_to_vertical()
+        
         rospy.loginfo("🚀 开始自动下探寻面程序...")
         # 确保已校准
         while not self.calibrated and not rospy.is_shutdown():
@@ -131,10 +182,9 @@ class AutoContactDrawer:
             
         rate = rospy.Rate(40) # 40Hz 控制循环
         
-        # 缓慢下探速度定义
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 0 # 基座坐标系
-        down_cmd.twist.linear_z = -0.005 # -5mm/s 向下
+        down_cmd.twist.linear_z = -0.005 # -5mm/s 慢速下落
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 0
@@ -142,13 +192,17 @@ class AutoContactDrawer:
         contact_detected = False
         
         while not rospy.is_shutdown():
-            # 检测力是否达到寻面阈值 (4.0N)
-            if self.current_fz >= self.contact_threshold:
-                rospy.loginfo(f"🟢 检测到平面接触！当前受力: {self.current_fz:.2f} N >= 4.0 N")
+            # 双重保险接触判定：第 6 关节力矩跳变 (>=0.06 N.m) 且 Z 轴总估算力大于等于 3.0N
+            # 这样能 100% 避免因机械臂运动导致的空气中力矩虚假跳变
+            if self.wrist_torque >= self.wrist_torque_threshold and self.current_fz >= 3.0:
+                rospy.loginfo(f"🟢 判定触及物体表面！")
+                rospy.loginfo(f"   >> 末端力矩 (Joint_6 Effort): {self.wrist_torque:.3f} N.m (阈值: {self.wrist_torque_threshold} N.m)")
+                rospy.loginfo(f"   >> 估计接触力 (Fz): {self.current_fz:.2f} N (阈值: 3.0 N)")
+                
                 # 瞬间停止并锁死
-                for _ in range(5):
+                for _ in range(10):
                     self.vel_pub.publish(stop_cmd)
-                    rospy.sleep(0.01)
+                    rospy.sleep(0.005)
                 contact_detected = True
                 break
                 
@@ -163,47 +217,42 @@ class AutoContactDrawer:
         else:
             raise RuntimeError("寻面程序异常终止")
 
-    def update_force_control(self, dt=0.05):
+    def update_force_control(self, dt=0.025):
         """
         非对称三段式 PD 力控律
         """
         if not self.calibrated or self.current_fz < self.contact_threshold:
-            # 未进入接触状态或未完成校准，不计算 PD，重置状态
+            # 未接触或未完成校准时，重置力控状态，力控不施加位移补偿
             self.prev_force_error = 0.0
             return self.z_offset
             
-        # 接触力误差计算 (目标 7.0N)
         force_error = self.target_force - self.current_fz
         d_error = (force_error - self.prev_force_error) / dt if dt > 0 else 0.0
         self.prev_force_error = force_error
         
-        # 实施非对称增益分配
+        # 实施非对称控制
         if force_error < 0:
             # 1. 过度按压区 (力 > 7.0N)：快速向上抬笔
             delta_z = self.kp_up * force_error + self.kd_up * d_error
         elif self.current_fz >= 5.0:
-            # 2. 允许浮动区 (5.0N <= 力 <= 7.0N)：浮动死区，不作位移调整
+            # 2. 允许浮动区 (5.0N <= 力 <= 7.0N)：允许浮动的死区，不调整位移
             delta_z = 0.0
         else:
-            # 3. 即将脱离区 (4.0N <= 力 < 5.0N 或完全悬空边缘)：采用极小增益极慢下压
+            # 3. 即将脱离区 (4.0N <= 力 < 5.0N)：极慢速度向下补偿压紧
             delta_z = self.kp_down * force_error + self.kd_down * d_error
             
-        # 饱和限幅
+        # 裁切单周期位移
         delta_z = np.clip(delta_z, -self.max_step, self.max_step)
-        
-        # 积分虚拟位移偏移
         self.z_offset += delta_z
         
-        # 防飞车限制器
+        # 触发防飞车保护
         if self.z_offset >= self.max_z_offset and delta_z > 0:
             self.z_offset = self.max_z_offset
         elif self.z_offset <= self.min_z_offset and delta_z < 0:
             self.z_offset = self.min_z_offset
             
-        # 重新裁切范围
         self.z_offset = np.clip(self.z_offset, self.min_z_offset, self.max_z_offset)
         
-        # 发布调试话题
         self.force_fz_pub.publish(Float64(self.current_fz))
         self.z_offset_pub.publish(Float64(self.z_offset))
         
@@ -211,9 +260,9 @@ class AutoContactDrawer:
 
     def execute_and_draw(self, csv_file):
         """
-        载入轨迹文件，下探寻面，动态重映射，并在非对称力控下执行绘制
+        全自动寻面对齐，并在高频速度伺服 + 非对称力控下运行绘制
         """
-        # 1. 读取原始 CSV 轨迹
+        # 1. 读取原始轨迹
         raw_waypoints = []
         rospy.loginfo(f"正在载入原始轨迹文件: {csv_file}")
         with open(csv_file, 'r') as f:
@@ -230,18 +279,16 @@ class AutoContactDrawer:
                     'phase': row['phase']
                 })
         
-        # 2. 全自动下探寻面
+        # 2. 自动下探寻面 (包含预先校正手腕为垂直姿态)
         contact_pose = self.run_auto_touchdown()
         
-        # 3. 动态原点平移和轨迹对齐
-        # 我们假设首个 phase 为 'draw' 或是 'touch_down' 的航点为轨迹绘制起点
+        # 3. 动态轨迹原点对齐
         first_draw_idx = 0
         for idx, wp in enumerate(raw_waypoints):
             if wp['phase'] in ['draw', 'touch_down']:
                 first_draw_idx = idx
                 break
                 
-        # 提取首个绘制点的原始几何坐标
         u_ref_x = raw_waypoints[first_draw_idx]['x']
         u_ref_y = raw_waypoints[first_draw_idx]['y']
         u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
@@ -249,7 +296,6 @@ class AutoContactDrawer:
         rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹...")
         aligned_waypoints = []
         for wp in raw_waypoints:
-            # 以物理接触坐标为起点进行整体平移偏置
             aligned_wp = {
                 'x': contact_pose.position.x + (wp['x'] - u_ref_x),
                 'y': contact_pose.position.y + (wp['y'] - u_ref_y),
@@ -262,11 +308,11 @@ class AutoContactDrawer:
             }
             aligned_waypoints.append(aligned_wp)
             
-        rospy.loginfo("✅ 轨迹在线动态对齐完成！开始按规划路径绘图。")
+        rospy.loginfo("✅ 轨迹对准成功！开始启动高频速度伺服绘图...")
         
-        # 4. 执行轨迹并叠加实时非对称力控
-        rate = rospy.Rate(20) # 20Hz 频率执行
-        dt = 0.05
+        # 4. 高频速度伺服跟踪与力控循环
+        rate = rospy.Rate(40) # 40Hz
+        dt = 0.025
         
         for i, wp in enumerate(aligned_waypoints):
             if rospy.is_shutdown():
@@ -274,29 +320,90 @@ class AutoContactDrawer:
                 
             quat = get_orientation_for_normal(wp['nx'], wp['ny'], wp['nz'])
             
-            # 只在落笔 (touch_down) 和绘制 (draw) 阶段介入非对称力控
+            # 计算轨迹点期望的 3D 绝对坐标 (融合静态坐标与力控 Z 轴累积偏移)
             if wp['phase'] in ['draw', 'touch_down']:
                 self.update_force_control(dt)
             else:
-                # 自由空间悬空时重置偏移
                 self.z_offset = 0.0
                 self.prev_force_error = 0.0
                 
-            # 融合静态目标点与力控累积位移偏移量
-            target_pose = Pose()
-            target_pose.position.x = wp['x']
-            target_pose.position.y = wp['y']
-            target_pose.position.z = wp['z_nominal'] + self.z_offset
-            target_pose.orientation = quat
+            target_x = wp['x']
+            target_y = wp['y']
+            target_z = wp['z_nominal'] + self.z_offset
             
-            # 使用 MoveIt 控制机械臂跟进到带力控补偿后的新坐标
-            self.move_group.set_pose_target(target_pose)
-            self.move_group.go(wait=True)
+            # 比例位置控制跟踪算法 (用于 XY 轨迹伺服)
+            k_pos = 1.2
             
-            rospy.loginfo(f"进度: {i+1}/{len(aligned_waypoints)} | Phase: {wp['phase']} | Fz: {self.current_fz:.2f}N | Offset Z: {self.z_offset:.4f}m")
-            rate.sleep()
+            # 在控制循环中持续朝向目标点发布速度，直至到达目标点 5mm 范围内
+            while not rospy.is_shutdown():
+                # 实时计算当前点与目标点的偏差
+                dx = target_x - self.current_x
+                dy = target_y - self.current_y
+                dz = target_z - self.current_z
+                
+                # 距离判断：小于 5mm 则切换至下一个航点
+                dist_to_target = math.hypot(dx, dy)
+                if dist_to_target < 0.005:
+                    break
+                    
+                # 速度伺服计算
+                cmd = TwistCommand()
+                cmd.reference_frame = 0 # 基座坐标系
+                cmd.duration = 0
+                
+                # XY 方向速度伺服
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.025, 0.025) # 限幅 2.5 cm/s
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.025, 0.025)
+                
+                # Z 方向受力控接管
+                if wp['phase'] in ['draw', 'touch_down'] and self.current_fz >= self.contact_threshold:
+                    # 接触状态下：使用力控计算出的速度修正量
+                    # 力控 PD 速度：v = - (Kp * e_f + Kd * d_e_f) 
+                    force_error = self.target_force - self.current_fz
+                    d_error = (force_error - self.prev_force_error) / dt
+                    self.prev_force_error = force_error
+                    
+                    if force_error < 0:
+                        v_z_comp = -(self.kp_up * force_error + self.kd_up * d_error)
+                    elif self.current_fz >= 5.0:
+                        v_z_comp = 0.0
+                    else:
+                        v_z_comp = -(self.kp_down * force_error + self.kd_down * d_error)
+                        
+                    # 物理防飞车截断
+                    self.z_offset += v_z_comp * dt
+                    if self.z_offset >= self.max_z_offset and v_z_comp > 0:
+                        v_z_comp = 0.0
+                    elif self.z_offset <= self.min_z_offset and v_z_comp < 0:
+                        v_z_comp = 0.0
+                    self.z_offset = np.clip(self.z_offset, self.min_z_offset, self.max_z_offset)
+                    
+                    cmd.twist.linear_z = np.clip(v_z_comp, -0.02, 0.02)
+                else:
+                    # 悬空/过渡状态下：直接进行 Z 轴位置比例伺服，以 1.5 cm/s 逼近
+                    cmd.twist.linear_z = np.clip(k_pos * dz, -0.015, 0.015)
+                
+                # 手腕姿态直接赋值（防止旋转飞车，由 Twist 保持当前目标面的垂直角度，Gen3-Lite底层会自动规划姿态过渡）
+                # 这里我们保持角速度为 0，因为姿态已在前置 move_group 中完成对齐，微小的路径偏差只需平移即可
+                cmd.twist.angular_x = 0.0
+                cmd.twist.angular_y = 0.0
+                cmd.twist.angular_z = 0.0
+                
+                self.vel_pub.publish(cmd)
+                self.z_offset_pub.publish(Float64(self.z_offset))
+                rate.sleep()
+                
+            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | Fz: {self.current_fz:.2f}N | Offset Z: {self.z_offset:.4f}m")
             
-        rospy.loginfo("🎉 全自动寻面与力控绘制任务执行完毕！")
+        # 5. 绘制结束，抬笔停机
+        rospy.loginfo("🛑 绘制完毕，垂直提笔并停机...")
+        stop_cmd = TwistCommand()
+        for _ in range(15):
+            self.vel_pub.publish(stop_cmd)
+            rospy.sleep(0.01)
+            
+        self.move_group.stop()
+        rospy.loginfo("🎉 全自动寻面与伺服力控绘制任务圆满完成！")
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
