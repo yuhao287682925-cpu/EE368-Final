@@ -94,8 +94,12 @@ class WristAligner:
         rospy.loginfo("🔄 开始基于三维轴角闭环姿态调直与首角校正控制...")
         
         while not rospy.is_shutdown():
-            # 计算当前与目标的旋转偏差
-            r_curr = R.from_matrix(self.R_curr)
+            # 计算当前与目标的旋转偏差 (兼容旧版 scipy 的 from_matrix 与 from_dcm)
+            if hasattr(R, 'from_matrix'):
+                r_curr = R.from_matrix(self.R_curr)
+            else:
+                r_curr = R.from_dcm(self.R_curr)
+                
             r_err = r_target * r_curr.inv()
             omega_err = r_err.as_rotvec()
             
