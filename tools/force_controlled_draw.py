@@ -10,8 +10,16 @@ from geometry_msgs.msg import Pose, Point, Quaternion
 from std_msgs.msg import Float64
 from scipy.spatial.transform import Rotation as R
 
-# 动态添加上级目录以导入已有的 jacobian.py
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 动态添加路径以兼容各种运行方式导入 jacobian
+import sys
+import os
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
 from jacobian import NLinkArm
 
 def get_orientation_for_normal(nx, ny, nz, default_rpy_deg=(22.688, 175.755, 83.736)):
