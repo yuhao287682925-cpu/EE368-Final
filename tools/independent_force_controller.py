@@ -34,11 +34,11 @@ class IndependentForceController:
                                    [-math.pi/2, 0, 235/1000, 0-math.pi/2]])
         self.arm_model = NLinkArm(dh_params_list)
         
-        # 力控参数设定 (目标力改为 4N)
-        self.target_force = 4.0      # 目标接触力 4N
+        # 力控参数设定 (目标力 8N，接触阈值 1.5N)
+        self.target_force = 8.0      # 目标接触力 8N
         self.kp = 0.003              # 比例增益 (速度控制下微调)
         self.kd = 0.0005             # 微分增益
-        self.contact_threshold = 1.0 # 接触门槛 1N
+        self.contact_threshold = 1.5 # 接触门槛 1.5N
         self.max_speed_z = 0.03      # 单周期最大 Z 轴速度 0.03 m/s
         
         # 内部状态变量
