@@ -167,9 +167,9 @@ class AutoContactDrawer:
         contact_detected = False
         loop_cnt = 0
         
-        # 引入接触判定滑动窗口 (40Hz 下 10个周期约 0.25 秒)
+        # 引入接触判定滑动窗口 (40Hz 下 16个周期约 0.4 秒)
         force_window = []
-        window_size = 10
+        window_size = 16
         
         while not rospy.is_shutdown():
             loop_cnt += 1
@@ -183,10 +183,10 @@ class AutoContactDrawer:
             avg_force = np.mean(force_window) if len(force_window) >= window_size else 0.0
             
             if loop_cnt % 15 == 0:
-                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 平均 Fz(0.25s): {avg_force:.2f} N (阈值: 7.0 N)")
+                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 平均 Fz(0.4s): {avg_force:.2f} N (阈值: 7.0 N)")
                 
-            # 起步前 0.5 秒 (约 20 个周期) 内屏蔽判定，避开加速瞬间的惯性力波动
-            if loop_cnt > 20:
+            # 起步前 1.0 秒 (约 40 个周期) 内屏蔽判定，避开加速瞬间的惯性力波动
+            if loop_cnt > 40:
                 # 使用平均估计力进行稳定接触判定
                 if len(force_window) >= window_size and avg_force >= 7.0:
                     rospy.loginfo(f"🟢 判定触及纸箱表面！")
