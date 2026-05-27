@@ -21,7 +21,7 @@ if current_dir not in sys.path:
 from jacobian import NLinkArm
 from scipy.spatial.transform import Rotation as R
 
-def get_orientation_for_normal(nx, ny, nz, default_rpy_deg=(22.688, 175.755, 83.736)):
+def get_orientation_for_normal(nx, ny, nz, default_rpy_deg=(0.0, 180.0, 0.0)):
     """
     计算末端姿态四元数，确保笔尖垂直于所绘平面
     """
