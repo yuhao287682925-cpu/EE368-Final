@@ -74,6 +74,10 @@ class IndependentForceController:
         thetas = msg.position[0:6]
         torques = msg.effort[0:6]
         
+        # 防御性设计：在仿真或者驱动初始化时，effort 数组可能为空，需跳过计算防止崩溃
+        if len(thetas) < 6 or len(torques) < 6:
+            return
+            
         # 求解基础雅可比矩阵并计算估计力
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)

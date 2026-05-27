@@ -99,6 +99,10 @@ class ForceControlledDrawer:
         thetas = msg.position[0:6]
         torques = msg.effort[0:6]
         
+        # 防御性设计：防止仿真或驱动初始化时 effort 为空导致点积形状不匹配
+        if len(thetas) < 6 or len(torques) < 6:
+            return
+            
         # 求解基础雅可比矩阵并计算估计力: F_ee = (J^T)^+ * tau
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
