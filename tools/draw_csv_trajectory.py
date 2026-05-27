@@ -141,7 +141,7 @@ def main():
     for i, stroke in enumerate(waypoints_by_stroke):
         rospy.loginfo(f"==== 正在执行笔画 {i+1}/{len(waypoints_by_stroke)} ====")
         
-        # 寻找本笔画的 touch_down 阶段点作为理论参考坐标
+        # 寻找本笔画 of touch_down 阶段点作为理论参考坐标
         touch_down_point = None
         for pt in stroke:
             if pt['phase'] == 'touch_down':
@@ -161,7 +161,7 @@ def main():
             base_frame = move_group.get_planning_frame()
             eef_frame = move_group.get_end_effector_link()
             
-            # 通道 A: 使用 TF 树在 Time(0) 监听最新变换 (完美解决多机时钟不同步的时间戳匹配问题)
+            # 通道 A: 使用 TF 树在 Time(0) 监听最新变换 (避开时钟同步报错)
             rospy.loginfo(f"优先通过 TF 树获取当前位姿 ({base_frame} -> {eef_frame})...")
             try:
                 tf_listener.waitForTransform(base_frame, eef_frame, rospy.Time(0), rospy.Duration(2.0))
@@ -203,11 +203,11 @@ def main():
             probe_target_pose.position.y -= probe_distance * ny
             probe_target_pose.position.z -= probe_distance * nz
             
-            # 采用关键字参数调用以防止 Noetic 底层 C++ 包装的签名类型匹配冲突
+            # 严格匹配底层 C++ 签名: (list, double, bool) -> 代表 waypoints, eef_step, avoid_collisions
             (probe_plan, fraction) = move_group.compute_cartesian_path(
-                waypoints=[probe_target_pose],
-                eef_step=0.001,
-                jump_threshold=0.0
+                [probe_target_pose],
+                0.001,
+                True
             )
             
             if fraction < 0.90:
@@ -279,9 +279,9 @@ def main():
         if draw_waypoints:
             rospy.loginfo(f"规划精准贴面绘制轨迹 (共 {len(draw_waypoints)} 个点)...")
             (plan, fraction) = move_group.compute_cartesian_path(
-                waypoints=draw_waypoints,
-                eef_step=0.005,
-                jump_threshold=0.0
+                draw_waypoints,
+                0.005,
+                True
             )
             if fraction < 0.95:
                 rospy.logwarn(f"规划残缺 (仅 {fraction*100:.1f}%)，跳过该笔画的绘制。")
