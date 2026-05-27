@@ -92,7 +92,7 @@ class WristAligner:
                 break
                 
             cmd = TwistCommand()
-            cmd.reference_frame = 0 # 基座坐标系
+            cmd.reference_frame = 3 # 基座坐标系
             cmd.duration = 0
             
             # 位置保持绝对不动
@@ -110,6 +110,7 @@ class WristAligner:
             
         # 调平完毕后发送零速度指令锁定机械臂
         stop_cmd = TwistCommand()
+        stop_cmd.reference_frame = 3
         for _ in range(15):
             self.vel_pub.publish(stop_cmd)
             rospy.sleep(0.005)

@@ -134,7 +134,7 @@ class IndependentForceController:
             teleop_active = (rospy.Time.now() - self.last_teleop_time).to_sec() < 0.5
             
             cmd = TwistCommand()
-            cmd.reference_frame = 0 # 基座坐标系
+            cmd.reference_frame = 3 # 基座坐标系
             cmd.duration = 0
             
             # 初始化速度为手柄遥控输入值

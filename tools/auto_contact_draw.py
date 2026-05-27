@@ -158,11 +158,11 @@ class AutoContactDrawer:
         rate = rospy.Rate(40) # 40Hz
         
         down_cmd = TwistCommand()
-        down_cmd.reference_frame = 0 # 基座坐标系
+        down_cmd.reference_frame = 3 # 基座坐标系
         down_cmd.twist.linear_z = -0.005 # -5mm/s 向下
         
         stop_cmd = TwistCommand()
-        stop_cmd.reference_frame = 0
+        stop_cmd.reference_frame = 3
         
         contact_detected = False
         
@@ -324,7 +324,7 @@ class AutoContactDrawer:
                     break
                     
                 cmd = TwistCommand()
-                cmd.reference_frame = 0 # 基座坐标系
+                cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
                 # XY 方向伺服速度
@@ -370,6 +370,7 @@ class AutoContactDrawer:
         # 5. 绘制结束，抬笔停机
         rospy.loginfo("🛑 绘制完毕，垂直提笔并停机...")
         stop_cmd = TwistCommand()
+        stop_cmd.reference_frame = 3
         for _ in range(15):
             self.vel_pub.publish(stop_cmd)
             rospy.sleep(0.01)
