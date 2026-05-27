@@ -61,8 +61,8 @@ class AutoContactDrawer:
         self.arm_model = NLinkArm(dh_params_list)
         
         # 核心力控与对刀判定参数
-        self.target_force = 7.0       # 目标接触力 7N
-        self.contact_threshold = 4.0  # 接触与力控激活判定阈值 4.0N
+        self.target_force = 5.5       # 目标接触力 5.5N (稍微减小)
+        self.contact_threshold = 3.5  # 接触与力控激活判定阈值 3.5N (随目标力下调)
         self.wrist_torque_threshold = 0.06 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.06 N.m
         
         self.kp_up = 0.005            # 过度按压抬升增益 (快速向上抬)
@@ -183,14 +183,14 @@ class AutoContactDrawer:
             avg_force = np.mean(force_window) if len(force_window) >= window_size else 0.0
             
             if loop_cnt % 15 == 0:
-                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 平均 Fz(0.25s): {avg_force:.2f} N (阈值: 7.0 N)")
+                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 平均 Fz(0.25s): {avg_force:.2f} N (阈值: 5.0 N)")
                 
             # 起步前 0.5 秒 (约 20 个周期) 内屏蔽判定，避开加速瞬间的惯性力波动
             if loop_cnt > 20:
                 # 使用平均估计力进行稳定接触判定
-                if len(force_window) >= window_size and avg_force >= 7.0:
+                if len(force_window) >= window_size and avg_force >= 5.0:
                     rospy.loginfo(f"🟢 判定触及纸箱表面！")
-                    rospy.loginfo(f"   >> 窗口内平均接触力 (Avg Fz): {avg_force:.2f} N (阈值: 7.0 N)")
+                    rospy.loginfo(f"   >> 窗口内平均接触力 (Avg Fz): {avg_force:.2f} N (阈值: 5.0 N)")
                     rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fz:.2f} N")
                     
                     # 发送 10 次 0 速度，确保驱动层刹停
