@@ -152,9 +152,23 @@ def main():
             theory_pose = touch_down_point['pose']
             nx, ny, nz = touch_down_point['nx'], touch_down_point['ny'], touch_down_point['nz']
             
-            # 直接获取当前位姿作为下探探测起点
-            probe_start_pose = move_group.get_current_pose().pose
-            rospy.loginfo(f"下探起点位姿 -> X:{probe_start_pose.position.x:.3f}, Y:{probe_start_pose.position.y:.3f}, Z:{probe_start_pose.position.z:.3f}")
+            # 获取当前实际位姿（带重试与防全零安全验证）
+            probe_start_pose = None
+            for retry in range(10):
+                pose_stamped = move_group.get_current_pose()
+                if pose_stamped is not None:
+                    p = pose_stamped.pose
+                    if abs(p.position.x) > 1e-4 or abs(p.position.y) > 1e-4 or abs(p.position.z) > 1e-4:
+                        probe_start_pose = p
+                        break
+                rospy.logwarn("机械臂状态数据尚未同步，正在重试获取当前位姿...")
+                rospy.sleep(0.5)
+                
+            if probe_start_pose is None:
+                rospy.logerr("🚨 错误: 无法获取机械臂当前的有效物理位姿！跳过本笔画以保护设备。")
+                continue
+                
+            rospy.loginfo(f"成功获取下探起点位姿 -> X:{probe_start_pose.position.x:.3f}, Y:{probe_start_pose.position.y:.3f}, Z:{probe_start_pose.position.z:.3f}")
             
             # 使用笛卡尔直线路径规划单向向下探测路径
             probe_distance = 0.035  # 最大下探 35mm
@@ -163,8 +177,13 @@ def main():
             probe_target_pose.position.y -= probe_distance * ny
             probe_target_pose.position.z -= probe_distance * nz
             
-            # 笛卡尔直线插补规划
-            (probe_plan, fraction) = move_group.compute_cartesian_path([probe_target_pose], 0.001, 0.0)
+            # 采用关键字参数调用以防止 Noetic 底层 C++ 包装的签名类型匹配冲突
+            (probe_plan, fraction) = move_group.compute_cartesian_path(
+                waypoints=[probe_target_pose],
+                eef_step=0.001,
+                jump_threshold=0.0
+            )
+            
             if fraction < 0.90:
                 rospy.logerr("下探直线路径规划失败，无法安全执行探测！")
                 continue
@@ -233,7 +252,11 @@ def main():
                 
         if draw_waypoints:
             rospy.loginfo(f"规划精准贴面绘制轨迹 (共 {len(draw_waypoints)} 个点)...")
-            (plan, fraction) = move_group.compute_cartesian_path(draw_waypoints, 0.005, 0.0)
+            (plan, fraction) = move_group.compute_cartesian_path(
+                waypoints=draw_waypoints,
+                eef_step=0.005,
+                jump_threshold=0.0
+            )
             if fraction < 0.95:
                 rospy.logwarn(f"规划残缺 (仅 {fraction*100:.1f}%)，跳过该笔画的绘制。")
                 continue
