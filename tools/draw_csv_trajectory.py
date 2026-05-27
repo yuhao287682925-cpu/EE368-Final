@@ -6,6 +6,7 @@ import time
 import math
 import numpy as np
 import rospy
+import tf
 import moveit_commander
 from geometry_msgs.msg import Pose, Quaternion
 from scipy.spatial.transform import Rotation as R
@@ -80,6 +81,9 @@ def main():
     robot = moveit_commander.RobotCommander(robot_description="/my_gen3_lite/robot_description")
     move_group = moveit_commander.MoveGroupCommander("arm", robot_description="/my_gen3_lite/robot_description", ns="/my_gen3_lite")
     
+    # 初始化 TF 监听器
+    tf_listener = tf.TransformListener()
+    
     # 初始化力传感器监控
     force_monitor = ForceMonitor()
     rospy.loginfo("正在等待力传感器数据接收...")
@@ -152,23 +156,45 @@ def main():
             theory_pose = touch_down_point['pose']
             nx, ny, nz = touch_down_point['nx'], touch_down_point['ny'], touch_down_point['nz']
             
-            # 获取当前实际位姿（带重试与防全零安全验证）
+            # 【双通道保障获取当前位姿】
             probe_start_pose = None
-            for retry in range(10):
-                pose_stamped = move_group.get_current_pose()
-                if pose_stamped is not None:
-                    p = pose_stamped.pose
-                    if abs(p.position.x) > 1e-4 or abs(p.position.y) > 1e-4 or abs(p.position.z) > 1e-4:
-                        probe_start_pose = p
-                        break
-                rospy.logwarn("机械臂状态数据尚未同步，正在重试获取当前位姿...")
-                rospy.sleep(0.5)
+            base_frame = move_group.get_planning_frame()
+            eef_frame = move_group.get_end_effector_link()
+            
+            # 通道 A: 使用 TF 树在 Time(0) 监听最新变换 (完美解决多机时钟不同步的时间戳匹配问题)
+            rospy.loginfo(f"优先通过 TF 树获取当前位姿 ({base_frame} -> {eef_frame})...")
+            try:
+                tf_listener.waitForTransform(base_frame, eef_frame, rospy.Time(0), rospy.Duration(2.0))
+                (trans, rot) = tf_listener.lookupTransform(base_frame, eef_frame, rospy.Time(0))
                 
+                probe_start_pose = Pose()
+                probe_start_pose.position.x = trans[0]
+                probe_start_pose.position.y = trans[1]
+                probe_start_pose.position.z = trans[2]
+                probe_start_pose.orientation.x = rot[0]
+                probe_start_pose.orientation.y = rot[1]
+                probe_start_pose.orientation.z = rot[2]
+                probe_start_pose.orientation.w = rot[3]
+                rospy.loginfo("成功通过 TF 监听到机械臂当前位姿！")
+            except Exception as e:
+                rospy.logwarn(f"TF 监听失败 ({str(e)})，正在降级尝试使用 MoveIt API 作为备用通道获取...")
+            
+            # 通道 B: 备用降级，使用 MoveIt API 获取
             if probe_start_pose is None:
-                rospy.logerr("🚨 错误: 无法获取机械臂当前的有效物理位姿！跳过本笔画以保护设备。")
+                for retry in range(5):
+                    pose_stamped = move_group.get_current_pose()
+                    if pose_stamped is not None:
+                        p = pose_stamped.pose
+                        if abs(p.position.x) > 1e-4 or abs(p.position.y) > 1e-4 or abs(p.position.z) > 1e-4:
+                            probe_start_pose = p
+                            break
+                    rospy.sleep(0.2)
+                    
+            if probe_start_pose is None:
+                rospy.logerr("🚨 错误: 无法获取机械臂当前的有效物理位姿！跳过本笔画。")
                 continue
                 
-            rospy.loginfo(f"成功获取下探起点位姿 -> X:{probe_start_pose.position.x:.3f}, Y:{probe_start_pose.position.y:.3f}, Z:{probe_start_pose.position.z:.3f}")
+            rospy.loginfo(f"下探起点位姿 -> X:{probe_start_pose.position.x:.3f}, Y:{probe_start_pose.position.y:.3f}, Z:{probe_start_pose.position.z:.3f}")
             
             # 使用笛卡尔直线路径规划单向向下探测路径
             probe_distance = 0.035  # 最大下探 35mm
