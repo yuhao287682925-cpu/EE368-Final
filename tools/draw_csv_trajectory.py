@@ -152,55 +152,74 @@ def main():
             theory_pose = touch_down_point['pose']
             nx, ny, nz = touch_down_point['nx'], touch_down_point['ny'], touch_down_point['nz']
             
-            # 【核心修改】直接以机械臂当前所处的位置作为探测起点，不进行 approach 点的规划和移动
+            # 直接获取当前位姿作为下探探测起点
             probe_start_pose = move_group.get_current_pose().pose
-            rospy.loginfo(f"直接以机械臂当前实际位置作为探测起点 (X:{probe_start_pose.position.x:.3f}, Y:{probe_start_pose.position.y:.3f}, Z:{probe_start_pose.position.z:.3f})")
+            rospy.loginfo(f"下探起点位姿 -> X:{probe_start_pose.position.x:.3f}, Y:{probe_start_pose.position.y:.3f}, Z:{probe_start_pose.position.z:.3f}")
             
-            # 步进慢速下探探测
-            target_force = 2.0  # 设定的基准接触力 (2N)
-            step_size = 0.0005  # 每次下探 0.5mm
-            max_steps = 100     # 增大最大步数（100步 = 50mm），确保安全探测到纸面
+            # 使用笛卡尔直线路径规划单向向下探测路径
+            probe_distance = 0.035  # 最大下探 35mm
+            probe_target_pose = copy.deepcopy(probe_start_pose)
+            probe_target_pose.position.x -= probe_distance * nx
+            probe_target_pose.position.y -= probe_distance * ny
+            probe_target_pose.position.z -= probe_distance * nz
             
-            actual_probe_pose = copy.deepcopy(probe_start_pose)
-            detected = False
-            offset_x, offset_y, offset_z = 0.0, 0.0, 0.0
-            
-            rospy.loginfo(f"开始自适应下探。目标法向按压力: {target_force} N")
-            
-            for step in range(1, max_steps + 1):
-                # 沿负法线方向微调 (朝表面方向下探)
-                actual_probe_pose.position.x = probe_start_pose.position.x - (step * step_size) * nx
-                actual_probe_pose.position.y = probe_start_pose.position.y - (step * step_size) * ny
-                actual_probe_pose.position.z = probe_start_pose.position.z - (step * step_size) * nz
-                
-                # 极慢速安全运动
-                move_group.set_max_velocity_scaling_factor(0.02)
-                move_group.set_max_acceleration_scaling_factor(0.02)
-                move_group.set_pose_target(actual_probe_pose)
-                move_group.go(wait=True)
-                move_group.stop()
-                move_group.clear_pose_targets()
-                
-                rospy.sleep(0.15) # 等待机械臂和力传感器稳定
-                
-                # 计算法向受力
-                f_contact = force_monitor.get_contact_force(nx, ny, nz)
-                rospy.loginfo(f"下探第 {step:2d}/{max_steps} 步 | 法向力: {f_contact:5.2f} N [F_raw: X={force_monitor.fx:.1f}, Y={force_monitor.fy:.1f}, Z={force_monitor.fz:.1f}]")
-                
-                if f_contact >= target_force:
-                     rospy.loginfo(f"🎉 触碰成功！法向力达到 {f_contact:.2f} N (>= {target_force} N)")
-                     detected = True
-                     
-                     # 偏移量计算：实际触碰位姿与理论 touch_down 位姿进行对比
-                     offset_x = actual_probe_pose.position.x - theory_pose.position.x
-                     offset_y = actual_probe_pose.position.y - theory_pose.position.y
-                     offset_z = actual_probe_pose.position.z - theory_pose.position.z
-                     rospy.loginfo(f"表面偏差 (Offset) -> X: {offset_x*1000:.2f}mm, Y: {offset_y*1000:.2f}mm, Z: {offset_z*1000:.2f}mm")
-                     break
-            
-            if not detected:
-                rospy.logerr("🚨 警告: 下探达到最大步数仍未检测到足够按压力，处于安全防护中止当前笔画！")
+            # 笛卡尔直线插补规划
+            (probe_plan, fraction) = move_group.compute_cartesian_path([probe_target_pose], 0.001, 0.0)
+            if fraction < 0.90:
+                rospy.logerr("下探直线路径规划失败，无法安全执行探测！")
                 continue
+                
+            # 极慢速安全Retiming控制 (限制在2%速度)
+            probe_plan = move_group.retime_trajectory(
+                robot.get_current_state(),
+                probe_plan,
+                velocity_scaling_factor=0.02,
+                acceleration_scaling_factor=0.02
+            )
+            
+            target_force = 2.0  # 2N 接触力
+            detected = False
+            
+            rospy.loginfo(f"开始连续自适应下探。目标法向按压力: {target_force} N")
+            
+            # 异步非阻塞执行下探运动
+            move_group.execute(probe_plan, wait=False)
+            
+            start_probe_time = rospy.Time.now()
+            max_probe_duration = 20.0  # 最多下探运行 20 秒
+            
+            # 100Hz 高频循环监听力矩反馈
+            rate = rospy.Rate(100)
+            while not rospy.is_shutdown():
+                if (rospy.Time.now() - start_probe_time).to_sec() > max_probe_duration:
+                    move_group.stop()
+                    rospy.logerr("🚨 下探动作超时，未能接触到物理表面！")
+                    break
+                    
+                # 计算最新的外法向投影按压力
+                f_contact = force_monitor.get_contact_force(nx, ny, nz)
+                
+                # 实时打断条件
+                if f_contact >= target_force:
+                    # 瞬时刹车叫停！
+                    move_group.stop()
+                    rospy.loginfo(f"🎉 触碰成功！当前法向按压力为 {f_contact:.2f} N >= {target_force} N。已实施保护性停机。")
+                    detected = True
+                    rospy.sleep(0.5)  # 等待机械臂平稳静止
+                    break
+                    
+                rate.sleep()
+                
+            if not detected:
+                rospy.logerr("🚨 下探未触碰，为了安全已中止本笔画！")
+                continue
+                
+            # 探测成功，获取当前的末端实际坐标并计算 Offset
+            actual_probe_pose = move_group.get_current_pose().pose
+            offset_x = actual_probe_pose.position.x - theory_pose.position.x
+            offset_y = actual_probe_pose.position.y - theory_pose.position.y
+            offset_z = actual_probe_pose.position.z - theory_pose.position.z
+            rospy.loginfo(f"表面偏差 (Offset) -> X: {offset_x*1000:.2f}mm, Y: {offset_y*1000:.2f}mm, Z: {offset_z*1000:.2f}mm")
         
         # 步骤C: 对该笔画后续所有的 draw 轨迹点应用偏移量进行补偿
         draw_waypoints = []
