@@ -131,12 +131,13 @@ def main():
         waypoints_by_stroke.append(current_stroke)
         
     rospy.loginfo(f"成功加载了 {len(waypoints_by_stroke)} 个连续笔画。")
-    input("🔥 按回车键开始全自动力自适应绘制！请确认安全看门狗已运行并握住急停！")
+    print("\n👉 请手动将机械臂移动（拖动）到目标纸面正上方安全高度，然后再按回车开始下探！")
+    input("🔥 确认当前位置安全后，按回车键开始下探探测与绘制！")
     
     for i, stroke in enumerate(waypoints_by_stroke):
         rospy.loginfo(f"==== 正在执行笔画 {i+1}/{len(waypoints_by_stroke)} ====")
         
-        # 寻找本笔画的 touch_down 阶段点作为探测参考点
+        # 寻找本笔画的 touch_down 阶段点作为理论参考坐标
         touch_down_point = None
         for pt in stroke:
             if pt['phase'] == 'touch_down':
@@ -151,26 +152,14 @@ def main():
             theory_pose = touch_down_point['pose']
             nx, ny, nz = touch_down_point['nx'], touch_down_point['ny'], touch_down_point['nz']
             
-            # 步骤A: 快速移动到笔画上方的 approach 起始点
-            approach_pose = stroke[0]['pose']
-            rospy.loginfo("正在移动到笔画上方的 approach 起始点...")
-            move_group.set_max_velocity_scaling_factor(0.3)
-            move_group.set_pose_target(approach_pose)
-            success = move_group.go(wait=True)
-            move_group.stop()
-            move_group.clear_pose_targets()
-            
-            if not success:
-                rospy.logerr("无法安全移动到 approach 起始点！提前终止本笔画。")
-                continue
-                
-            # 步骤B: 直接以当前实际达到的位置作为下探的起点
+            # 【核心修改】直接以机械臂当前所处的位置作为探测起点，不进行 approach 点的规划和移动
             probe_start_pose = move_group.get_current_pose().pose
+            rospy.loginfo(f"直接以机械臂当前实际位置作为探测起点 (X:{probe_start_pose.position.x:.3f}, Y:{probe_start_pose.position.y:.3f}, Z:{probe_start_pose.position.z:.3f})")
             
             # 步进慢速下探探测
             target_force = 2.0  # 设定的基准接触力 (2N)
             step_size = 0.0005  # 每次下探 0.5mm
-            max_steps = 70      # 最大下探 35mm (70步，确保从 approach 高度能安全探到表面)
+            max_steps = 100     # 增大最大步数（100步 = 50mm），确保安全探测到纸面
             
             actual_probe_pose = copy.deepcopy(probe_start_pose)
             detected = False
