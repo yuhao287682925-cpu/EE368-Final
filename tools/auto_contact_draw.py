@@ -159,7 +159,7 @@ class AutoContactDrawer:
         
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 3 # 基座坐标系
-        down_cmd.twist.linear_z = -0.005 # -5mm/s 向下
+        down_cmd.twist.linear_z = -0.015 # -15mm/s 向下，跳出超低速黏滑爬行区
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
@@ -185,19 +185,24 @@ class AutoContactDrawer:
             if loop_cnt % 15 == 0:
                 rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 平均 Fz(0.25s): {avg_force:.2f} N (阈值: 7.0 N)")
                 
-            # 使用平均估计力进行稳定接触判定
-            if len(force_window) >= window_size and avg_force >= 7.0:
-                rospy.loginfo(f"🟢 判定触及纸箱表面！")
-                rospy.loginfo(f"   >> 窗口内平均接触力 (Avg Fz): {avg_force:.2f} N (阈值: 7.0 N)")
-                rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fz:.2f} N")
-                
-                # 发送 10 次 0 速度，确保驱动层刹停
-                for _ in range(10):
-                    self.vel_pub.publish(stop_cmd)
-                    rospy.sleep(0.005)
-                contact_detected = True
-                break
-                
+            # 起步前 0.5 秒 (约 20 个周期) 内屏蔽判定，避开加速瞬间的惯性力波动
+            if loop_cnt > 20:
+                # 使用平均估计力进行稳定接触判定
+                if len(force_window) >= window_size and avg_force >= 7.0:
+                    rospy.loginfo(f"🟢 判定触及纸箱表面！")
+                    rospy.loginfo(f"   >> 窗口内平均接触力 (Avg Fz): {avg_force:.2f} N (阈值: 7.0 N)")
+                    rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fz:.2f} N")
+                    
+                    # 发送 10 次 0 速度，确保驱动层刹停
+                    for _ in range(10):
+                        self.vel_pub.publish(stop_cmd)
+                        rospy.sleep(0.005)
+                    contact_detected = True
+                    break
+            else:
+                if loop_cnt % 10 == 0:
+                    rospy.loginfo("⏳ 启动加速平稳期，屏蔽接触判定...")
+                    
             self.vel_pub.publish(down_cmd)
             rate.sleep()
             
