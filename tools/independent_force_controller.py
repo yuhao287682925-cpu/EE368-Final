@@ -44,6 +44,9 @@ class IndependentForceController:
         # 内部状态变量
         self.prev_force_error = 0.0  # 上一时刻力偏差，用于微分计算
         self.current_fz = 0.0
+        self.z_offset = 0.0          # 虚拟 Z 轴力控累积位移 (用于防飞车限位)
+        self.max_z_offset = 0.015    # 允许向上抬升的最大累积位移 (1.5 cm)
+        self.min_z_offset = -0.03    # 允许向下压紧的最大累积位移 (-3.0 cm)
         
         # 零点力校准参数
         self.fz_bias = 0.0
@@ -153,7 +156,7 @@ class IndependentForceController:
                 
             # 执行 Z 轴力控
             if self.calibrated and self.current_fz >= self.contact_threshold:
-                # 接触力误差计算 (目标 4N - 实际估计力)
+                # 接触力误差计算 (目标 7N - 实际估计力)
                 force_error = self.target_force - self.current_fz
                 
                 # 计算微分项
@@ -163,14 +166,28 @@ class IndependentForceController:
                 # PD 输出补偿速度 (下压速度为负，因此需取负号)
                 v_z_comp = -(self.kp * force_error + self.kd * d_error)
                 
+                # 虚拟 Z 轴位移累积计算与防飞车限位
+                self.z_offset += v_z_comp * dt
+                
+                # 触发防飞车保护：如果向上抬起量已达最大限制且控制律依然要求向上抬 (v_z_comp > 0)
+                if self.z_offset >= self.max_z_offset and v_z_comp > 0:
+                    v_z_comp = 0.0
+                # 同理限制向下的最大下压量
+                elif self.z_offset <= self.min_z_offset and v_z_comp < 0:
+                    v_z_comp = 0.0
+                    
+                # 重新裁切 z_offset 范围
+                self.z_offset = np.clip(self.z_offset, self.min_z_offset, self.max_z_offset)
+                
                 # 速度保护限制
                 v_z_comp = np.clip(v_z_comp, -self.max_speed_z, self.max_speed_z)
                 
                 # 强制覆盖手柄的 Z 轴输入，实施主动力控
                 cmd.twist.linear_z = v_z_comp
             else:
-                # 未触碰平面时，重置力控微分项
+                # 未触碰平面时，重置力控状态与累积位移
                 self.prev_force_error = 0.0
+                self.z_offset = 0.0
                 # Z 轴完全跟随手柄速度输入 (如果没有输入就是 0.0)
             
             # 发布最终控制指令
