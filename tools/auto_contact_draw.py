@@ -334,6 +334,10 @@ class AutoContactDrawer:
             prev_servo_x = self.current_x
             prev_servo_y = self.current_y
             
+            # 引入绘图力滑动窗口 (40Hz 下 8个周期约 0.2秒，用以过滤瞬态硬点/冲击，防止灵敏抬笔)
+            draw_force_window = []
+            draw_window_size = 8
+            
             # 位置伺服走点循环
             while not rospy.is_shutdown():
                 # 在控制周期内部，基于当前的力控偏移 z_offset 动态更新目标高度
@@ -346,6 +350,12 @@ class AutoContactDrawer:
                 dist_to_target = math.hypot(dx, dy)
                 if dist_to_target < 0.005: # 到位距离 5mm
                     break
+                    
+                # 绘图力滑动窗口维护与平滑
+                draw_force_window.append(self.current_fz)
+                if len(draw_force_window) > draw_window_size:
+                    draw_force_window.pop(0)
+                fz_filtered = np.mean(draw_force_window) if len(draw_force_window) >= draw_window_size else self.current_fz
                     
                 # 判定卡阻逻辑 (在绘制阶段且离目标点较远时)
                 if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
@@ -369,19 +379,19 @@ class AutoContactDrawer:
                 cmd.twist.linear_y = np.clip(k_pos * dy, -0.04, 0.04)
                 
                 # Z 方向受力控接管
-                if wp['phase'] in ['draw', 'touch_down'] and self.current_fz >= self.contact_threshold:
+                if wp['phase'] in ['draw', 'touch_down'] and fz_filtered >= self.contact_threshold:
                     if stuck_cnt >= 8: # 连续 8 个周期（0.2秒）移动受阻，触发主动释放
                         v_z_comp = 0.03 # 强行以 3cm/s 向上拔笔
                         if stuck_cnt % 8 == 0:
                             rospy.logwarn(f"⚠️ 检测到笔尖卡阻！已触发智能抬笔释放压力 (当前 z_offset: {self.z_offset:.4f}m)")
                     else:
-                        force_error = self.target_force - self.current_fz
+                        force_error = self.target_force - fz_filtered
                         d_error = (force_error - self.prev_force_error) / dt
                         self.prev_force_error = force_error
                         
                         if force_error < 0:
                             v_z_comp = -(self.kp_up * force_error + self.kd_up * d_error)
-                        elif self.current_fz >= 5.0:
+                        elif fz_filtered >= 5.0:
                             v_z_comp = 0.0
                         else:
                             v_z_comp = -(self.kp_down * force_error + self.kd_down * d_error)
@@ -396,9 +406,10 @@ class AutoContactDrawer:
                     
                     cmd.twist.linear_z = np.clip(v_z_comp, -0.02, 0.03) # 允许向上最大速度放宽至 3cm/s
                 else:
-                    # 如果发生脱离（力小于 4N）或处于抬笔区，立即将偏置 z_offset 归零，重置力控状态，迫使机械臂向下压紧重新寻面
+                    # 如果发生脱离（力小于 4N）或处于抬笔区，立即将偏置 z_offset 归零，重置力控状态与受力滑动窗，迫使机械臂向下压紧重新寻面
                     self.z_offset = 0.0
                     self.prev_force_error = 0.0
+                    draw_force_window = []
                     
                     # 重新计算无偏置时的标称高度差，发布下探贴紧速度
                     target_z_nominal = wp['z_nominal']
