@@ -170,12 +170,12 @@ class AutoContactDrawer:
         while not rospy.is_shutdown():
             loop_cnt += 1
             if loop_cnt % 15 == 0:
-                rospy.loginfo(f"⏳ 正在直线下探... 当前估计接触力 Fz: {self.current_fz:.2f} N (判定阈值: 3.0 N)")
+                rospy.loginfo(f"⏳ 正在直线下探... 当前估计接触力 Fz: {self.current_fz:.2f} N (判定阈值: 7.0 N)")
                 
             # 仅使用估计接触力 Fz 进行接触判定 (因为笔直向下时自转第六关节受力臂为0，无力矩变化)
-            if self.current_fz >= 3.0:
+            if self.current_fz >= 7.0:
                 rospy.loginfo(f"🟢 判定触及纸箱表面！")
-                rospy.loginfo(f"   >> 估计接触力 (Fz): {self.current_fz:.2f} N (阈值: 3.0 N)")
+                rospy.loginfo(f"   >> 估计接触力 (Fz): {self.current_fz:.2f} N (阈值: 7.0 N)")
                 
                 # 发送 10 次 0 速度，确保驱动层刹停
                 for _ in range(10):
