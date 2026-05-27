@@ -167,9 +167,9 @@ class AutoContactDrawer:
         contact_detected = False
         loop_cnt = 0
         
-        # 引入接触判定滑动窗口 (40Hz 下 16个周期约 0.4 秒)
+        # 引入接触判定滑动窗口 (40Hz 下 24个周期约 0.6 秒)
         force_window = []
-        window_size = 16
+        window_size = 24
         
         while not rospy.is_shutdown():
             loop_cnt += 1
@@ -183,10 +183,10 @@ class AutoContactDrawer:
             avg_force = np.mean(force_window) if len(force_window) >= window_size else 0.0
             
             if loop_cnt % 15 == 0:
-                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 平均 Fz(0.4s): {avg_force:.2f} N (阈值: 7.0 N)")
+                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 平均 Fz(0.6s): {avg_force:.2f} N (阈值: 7.0 N)")
                 
-            # 起步前 1.0 秒 (约 40 个周期) 内屏蔽判定，避开加速瞬间的惯性力波动
-            if loop_cnt > 40:
+            # 起步前 1.5 秒 (约 60 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
+            if loop_cnt > 60:
                 # 使用平均估计力进行稳定接触判定
                 if len(force_window) >= window_size and avg_force >= 7.0:
                     rospy.loginfo(f"🟢 判定触及纸箱表面！")
@@ -334,9 +334,9 @@ class AutoContactDrawer:
             prev_servo_x = self.current_x
             prev_servo_y = self.current_y
             
-            # 引入绘图力滑动窗口 (40Hz 下 8个周期约 0.2秒，用以过滤瞬态硬点/冲击，防止灵敏抬笔)
+            # 引入绘图力滑动窗口 (40Hz 下 16个周期约 0.4秒，用以过滤瞬态硬点/冲击，防止灵敏抬笔)
             draw_force_window = []
-            draw_window_size = 8
+            draw_window_size = 16
             
             # 位置伺服走点循环
             while not rospy.is_shutdown():
