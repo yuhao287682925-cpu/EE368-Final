@@ -145,19 +145,11 @@ class AutoContactDrawer:
         强制将机械臂设置到完全垂直朝下的旋转角
         """
         rospy.loginfo("🔄 正在调整末端手腕至完全垂直姿态...")
-        # 获取当前位姿
-        current_pose = self.move_group.get_current_pose().pose
         
-        # 设置目标姿态为垂直 (默认 RPY 姿态四元数)
+        # 仅指定姿态目标，不限制位置 (允许 MoveIt 在解算时自动微调 XY 坐标以获取可行解)
         vertical_quat = get_orientation_for_normal(0, 0, 1) # 垂直向下
+        self.move_group.set_orientation_target([vertical_quat.x, vertical_quat.y, vertical_quat.z, vertical_quat.w])
         
-        target_pose = Pose()
-        target_pose.position.x = current_pose.position.x
-        target_pose.position.y = current_pose.position.y
-        target_pose.position.z = current_pose.position.z
-        target_pose.orientation = vertical_quat
-        
-        self.move_group.set_pose_target(target_pose)
         success = self.move_group.go(wait=True)
         self.move_group.stop()
         self.move_group.clear_pose_targets()
