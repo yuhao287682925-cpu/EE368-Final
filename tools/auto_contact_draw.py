@@ -328,7 +328,11 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 1.2
+            k_pos = 1.6 # 提高位置控制增益，让机械臂拥有更大的位置拖拽力
+            
+            stuck_cnt = 0
+            prev_servo_x = self.current_x
+            prev_servo_y = self.current_y
             
             # 位置伺服走点循环
             while not rospy.is_shutdown():
@@ -343,26 +347,44 @@ class AutoContactDrawer:
                 if dist_to_target < 0.005: # 到位距离 5mm
                     break
                     
+                # 判定卡阻逻辑 (在绘制阶段且离目标点较远时)
+                if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
+                    movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
+                    if movement < 0.0003: # 单周期位移小于 0.3mm (说明可能被卡在纸箱凹陷里)
+                        stuck_cnt += 1
+                    else:
+                        stuck_cnt = max(0, stuck_cnt - 1)
+                else:
+                    stuck_cnt = 0
+                    
+                prev_servo_x = self.current_x
+                prev_servo_y = self.current_y
+                
                 cmd = TwistCommand()
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.025, 0.025)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.025, 0.025)
+                # XY 方向伺服速度 (限幅从 0.025 提升到 0.04 m/s，提升拖动能力)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.04, 0.04)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.04, 0.04)
                 
                 # Z 方向受力控接管
                 if wp['phase'] in ['draw', 'touch_down'] and self.current_fz >= self.contact_threshold:
-                    force_error = self.target_force - self.current_fz
-                    d_error = (force_error - self.prev_force_error) / dt
-                    self.prev_force_error = force_error
-                    
-                    if force_error < 0:
-                        v_z_comp = -(self.kp_up * force_error + self.kd_up * d_error)
-                    elif self.current_fz >= 5.0:
-                        v_z_comp = 0.0
+                    if stuck_cnt >= 8: # 连续 8 个周期（0.2秒）移动受阻，触发主动释放
+                        v_z_comp = 0.03 # 强行以 3cm/s 向上拔笔
+                        if stuck_cnt % 8 == 0:
+                            rospy.logwarn(f"⚠️ 检测到笔尖卡阻！已触发智能抬笔释放压力 (当前 z_offset: {self.z_offset:.4f}m)")
                     else:
-                        v_z_comp = -(self.kp_down * force_error + self.kd_down * d_error)
+                        force_error = self.target_force - self.current_fz
+                        d_error = (force_error - self.prev_force_error) / dt
+                        self.prev_force_error = force_error
+                        
+                        if force_error < 0:
+                            v_z_comp = -(self.kp_up * force_error + self.kd_up * d_error)
+                        elif self.current_fz >= 5.0:
+                            v_z_comp = 0.0
+                        else:
+                            v_z_comp = -(self.kp_down * force_error + self.kd_down * d_error)
                         
                     # 虚拟限位限制与累加量更新
                     self.z_offset += v_z_comp * dt
@@ -372,7 +394,7 @@ class AutoContactDrawer:
                         v_z_comp = 0.0
                     self.z_offset = np.clip(self.z_offset, self.min_z_offset, self.max_z_offset)
                     
-                    cmd.twist.linear_z = np.clip(v_z_comp, -0.02, 0.02)
+                    cmd.twist.linear_z = np.clip(v_z_comp, -0.02, 0.03) # 允许向上最大速度放宽至 3cm/s
                 else:
                     # 如果发生脱离（力小于 4N）或处于抬笔区，立即将偏置 z_offset 归零，重置力控状态，迫使机械臂向下压紧重新寻面
                     self.z_offset = 0.0
