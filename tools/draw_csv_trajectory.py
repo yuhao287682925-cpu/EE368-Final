@@ -151,27 +151,26 @@ def main():
             theory_pose = touch_down_point['pose']
             nx, ny, nz = touch_down_point['nx'], touch_down_point['ny'], touch_down_point['nz']
             
-            # 步骤A: 快速移动到探测起点 (理论接触点沿外法向外延 5mm 的位置)
-            probe_start_pose = copy.deepcopy(theory_pose)
-            probe_start_pose.position.x += 0.005 * nx
-            probe_start_pose.position.y += 0.005 * ny
-            probe_start_pose.position.z += 0.005 * nz
-            
-            rospy.loginfo("正在移动到探测起点 (距离理论表面 5mm 处)...")
+            # 步骤A: 快速移动到笔画上方的 approach 起始点
+            approach_pose = stroke[0]['pose']
+            rospy.loginfo("正在移动到笔画上方的 approach 起始点...")
             move_group.set_max_velocity_scaling_factor(0.3)
-            move_group.set_pose_target(probe_start_pose)
+            move_group.set_pose_target(approach_pose)
             success = move_group.go(wait=True)
             move_group.stop()
             move_group.clear_pose_targets()
             
             if not success:
-                rospy.logerr("无法安全移动到探测起点！提前终止本笔画。")
+                rospy.logerr("无法安全移动到 approach 起始点！提前终止本笔画。")
                 continue
                 
-            # 步骤B: 步进慢速下探探测
+            # 步骤B: 直接以当前实际达到的位置作为下探的起点
+            probe_start_pose = move_group.get_current_pose().pose
+            
+            # 步进慢速下探探测
             target_force = 2.0  # 设定的基准接触力 (2N)
             step_size = 0.0005  # 每次下探 0.5mm
-            max_steps = 30      # 最大下探 15mm (30步)
+            max_steps = 70      # 最大下探 35mm (70步，确保从 approach 高度能安全探到表面)
             
             actual_probe_pose = copy.deepcopy(probe_start_pose)
             detected = False
@@ -180,7 +179,7 @@ def main():
             rospy.loginfo(f"开始自适应下探。目标法向按压力: {target_force} N")
             
             for step in range(1, max_steps + 1):
-                # 沿负法线方向微调
+                # 沿负法线方向微调 (朝表面方向下探)
                 actual_probe_pose.position.x = probe_start_pose.position.x - (step * step_size) * nx
                 actual_probe_pose.position.y = probe_start_pose.position.y - (step * step_size) * ny
                 actual_probe_pose.position.z = probe_start_pose.position.z - (step * step_size) * nz
@@ -203,7 +202,7 @@ def main():
                      rospy.loginfo(f"🎉 触碰成功！法向力达到 {f_contact:.2f} N (>= {target_force} N)")
                      detected = True
                      
-                     # 偏移量计算
+                     # 偏移量计算：实际触碰位姿与理论 touch_down 位姿进行对比
                      offset_x = actual_probe_pose.position.x - theory_pose.position.x
                      offset_y = actual_probe_pose.position.y - theory_pose.position.y
                      offset_z = actual_probe_pose.position.z - theory_pose.position.z
@@ -211,7 +210,7 @@ def main():
                      break
             
             if not detected:
-                rospy.logerr("🚨 警告: 下探达到 15mm 仍未检测到足够按压力，处于安全防护中止当前笔画！")
+                rospy.logerr("🚨 警告: 下探达到最大步数仍未检测到足够按压力，处于安全防护中止当前笔画！")
                 continue
         
         # 步骤C: 对该笔画后续所有的 draw 轨迹点应用偏移量进行补偿
