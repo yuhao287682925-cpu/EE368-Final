@@ -45,6 +45,11 @@ class IndependentForceController:
         self.prev_force_error = 0.0  # 上一时刻力偏差，用于微分计算
         self.current_fz = 0.0
         
+        # 零点力校准参数
+        self.fz_bias = 0.0
+        self.calibration_samples = []
+        self.calibrated = False
+        
         # 手柄输入缓存
         self.teleop_twist = KortexTwist()
         self.last_teleop_time = rospy.Time(0)
@@ -65,6 +70,7 @@ class IndependentForceController:
         
         rospy.loginfo("🟢 独立手柄力控补偿节点已启动！")
         rospy.loginfo("   >> 目标力: 4.0 N")
+        rospy.loginfo("   >> 请确保开机时机械臂处于空气中悬空静止状态，以便进行 1 秒的零点校准。")
         rospy.loginfo("   >> 请将手柄发出的速度指令发布至: /my_gen3_lite/teleop/cmd_vel 或 /my_gen3_lite/teleop/cartesian_velocity")
         
     def joint_states_callback(self, msg):
@@ -82,8 +88,19 @@ class IndependentForceController:
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
         
-        # 估计末端 Z 轴向力（取绝对值代表接触力大小）
-        self.current_fz = abs(tool_force[2])
+        raw_fz = tool_force[2]
+        
+        # 自动零点校准
+        if not self.calibrated:
+            self.calibration_samples.append(raw_fz)
+            if len(self.calibration_samples) >= 40: # 40 个样本 (约 1 秒)
+                self.fz_bias = np.mean(self.calibration_samples)
+                self.calibrated = True
+                rospy.loginfo(f"✅ 传感器零点校准完成！消除重力偏差 (Z Bias): {self.fz_bias:.2f} N")
+            return
+            
+        # 估计末端 Z 轴向力（减去零点偏差并取绝对值）
+        self.current_fz = abs(raw_fz - self.fz_bias)
         self.force_fz_pub.publish(Float64(self.current_fz))
 
     def twist_teleop_callback(self, msg):
@@ -135,7 +152,7 @@ class IndependentForceController:
                 cmd.twist.angular_z = 0.0
                 
             # 执行 Z 轴力控
-            if self.current_fz >= self.contact_threshold:
+            if self.calibrated and self.current_fz >= self.contact_threshold:
                 # 接触力误差计算 (目标 4N - 实际估计力)
                 force_error = self.target_force - self.current_fz
                 

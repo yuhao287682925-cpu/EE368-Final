@@ -72,6 +72,11 @@ class ForceControlledDrawer:
         self.z_offset = 0.0          # 稳态累积 Z 轴位置补偿量
         self.prev_force_error = 0.0  # 上一时刻力偏差，用于微分计算
         
+        # 零点力校准参数
+        self.fz_bias = 0.0
+        self.calibration_samples = []
+        self.calibrated = False
+        
         # 实时力估计状态
         self.current_fz = 0.0
         
@@ -107,14 +112,25 @@ class ForceControlledDrawer:
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
         
-        # 估计末端 Z 轴向力（取绝对值代表接触力大小）
-        self.current_fz = abs(tool_force[2])
+        raw_fz = tool_force[2]
+        
+        # 自动零点校准
+        if not self.calibrated:
+            self.calibration_samples.append(raw_fz)
+            if len(self.calibration_samples) >= 40: # 40 个样本 (约 1 秒)
+                self.fz_bias = np.mean(self.calibration_samples)
+                self.calibrated = True
+                rospy.loginfo(f"✅ 传感器零点校准完成！消除重力偏差 (Z Bias): {self.fz_bias:.2f} N")
+            return
+            
+        # 估计末端 Z 轴向力（减去零点偏差并取绝对值）
+        self.current_fz = abs(raw_fz - self.fz_bias)
         
     def update_force_control(self, dt=0.05):
         """
         核心 PD 控制律计算
         """
-        if self.current_fz < self.contact_threshold:
+        if not self.calibrated or self.current_fz < self.contact_threshold:
             # 未进入接触状态时，保持当前偏移量，不累积误差，防止自由空间发散
             self.prev_force_error = 0.0
             return self.z_offset
