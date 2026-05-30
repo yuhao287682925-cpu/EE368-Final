@@ -94,6 +94,8 @@ class AutoContactDrawer:
         self.is_static = True
         self.wrist_torque = 0.0
         self.prev_force_error = 0.0
+        self.error = 0.0
+        self.prev_error = 0.0
         
         # 实时笛卡尔坐标缓存
         self.current_x = 0.0
