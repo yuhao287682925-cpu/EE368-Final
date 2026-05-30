@@ -347,17 +347,21 @@ class AutoContactDrawer:
             d_error = (force_error - self.prev_force_error) / dt if dt > 0 else 0.0
             self.prev_force_error = force_error
             
-            # 控制律位置调整量：dz = -(Kp * ef + Kd * d_ef)
-            dz = -(self.kp * force_error + self.kd * d_error)
+            # 控制律计算补偿速度：v_z_comp = -(Kp * ef + Kd * d_ef)
+            # 这样设计避免了位置差分除以dt产生的放大效应，保证平稳运行
+            v_z_comp = -(self.kp * force_error + self.kd * d_error)
+            
+            # 速度硬限幅 8mm/s，防止机械臂剧烈上下震动
+            v_z_comp = np.clip(v_z_comp, -0.008, 0.008)
+            
+            # 计算该周期实际位置调整量：dz = v_z_comp * dt
+            dz = v_z_comp * dt
             
             # 饱和限制：单周期 Z 轴位置调整量不超过 0.01m (1cm)
             dz = np.clip(dz, -0.01, 0.01)
             
-            # 稳态补偿：累积 Z 轴偏移量，消除静态误差
+            # 稳态补偿：累积 Z 轴偏移量，消除静态力误差
             self.z_offset = self.z_offset + dz
-            
-            # 将位置改变量换算为伺服的速度指令
-            v_z_comp = dz / dt
             
         # 触发防飞车硬限幅保护（限制 z_offset 范围，[-0.03, 0.008]m，防止悬空过高或压得太深）
         self.z_offset = np.clip(self.z_offset, self.min_z_offset, self.max_z_offset)
