@@ -75,14 +75,14 @@ class AutoContactDrawer:
         self.contact_threshold = 4.0  # 接触与力控激活判定阈值 4.0N
         self.wrist_torque_threshold = 0.25 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.25 N.m (调高以防止频繁误触发抬升)
         
-        self.kp_up = 0.005            # 过度按压抬升增益 (快速向上抬)
+        self.kp_up = 0.008            # 过度按压抬升增益 (快速向上抬)
         self.kd_up = 0.001
         self.kp_down = 0.0008         # 接触不足下压增益 (缓慢向下压)
         self.kd_down = 0.0001
         
         self.max_step = 0.01          # 单周期最大位移微调量
         self.z_offset = 0.0           # 虚拟 Z 轴力控累积位移 (用于防飞车限位)
-        self.max_z_offset = 0.008     # 最大抬升位移限制 (0.8 cm，防止悬空)
+        self.max_z_offset = 0.025     # 最大抬升位移限制 (2.5 cm，防止因为遇到大突起而抬升不足)
         self.min_z_offset = -0.03     # 最大下压位移限制 (-3.0 cm)
         
         # 零点力校准状态
@@ -290,8 +290,8 @@ class AutoContactDrawer:
                 # 压力不足，缓慢下压
                 v_z_comp = -(self.kp_down * force_error + self.kd_down * d_error)
                 
-            # 速度硬限幅 8mm/s
-            v_z_comp = np.clip(v_z_comp, -0.008, 0.008)
+            # 速度非对称硬限幅：向下安全慢压 (-8mm/s)，向上快速抬升避让 (+25mm/s)
+            v_z_comp = np.clip(v_z_comp, -0.008, 0.025)
             
             # Leaky 积分更新，漏损系数 0.995
             self.z_offset = 0.995 * self.z_offset + v_z_comp * dt
