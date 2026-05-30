@@ -34,10 +34,10 @@ class SideContactDrawer:
         self.current_y = 0.0
         self.current_z = 0.0
         
-        self.f3d_bias = np.zeros(3)
+        self.fy_bias = 0.0
         self.calibration_samples = []
         self.calibrated = False
-        self.current_f_total = 0.0
+        self.current_fy = 0.0
         
         rospy.Subscriber("/my_gen3_lite/joint_states", JointState, self.joint_states_callback)
         self.vel_pub = rospy.Publisher("/my_gen3_lite/in/cartesian_velocity", TwistCommand, queue_size=1)
@@ -57,21 +57,20 @@ class SideContactDrawer:
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
         
-        raw_f3d = tool_force[0:3]
+        # 面向 -Y 寻面，主要受力轴为 Y
+        raw_fy = tool_force[1]
         
         if not self.calibrated:
-            self.calibration_samples.append(raw_f3d)
+            self.calibration_samples.append(raw_fy)
             if len(self.calibration_samples) >= 40:
-                self.f3d_bias = np.mean(self.calibration_samples, axis=0)
+                self.fy_bias = np.mean(self.calibration_samples)
                 self.calibrated = True
-                rospy.loginfo(f"✅ 传感器零点校准完成！消除 3D 静力偏置: [{self.f3d_bias[0]:.2f}, {self.f3d_bias[1]:.2f}, {self.f3d_bias[2]:.2f}] N")
+                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Y Bias): {self.fy_bias:.2f} N")
             return
             
-        f_net = raw_f3d - self.f3d_bias
-        
-        # 多方向合力 (包含垂直压力和平面上的横向/纵向摩擦阻力)
-        self.current_f_total = np.linalg.norm(f_net)
-        self.force_pub.publish(StdFloat64(self.current_f_total))
+        # -Y 方向推进，取绝对值作为阻力
+        self.current_fy = abs(raw_fy - self.fy_bias)
+        self.force_pub.publish(StdFloat64(self.current_fy))
 
     def run_auto_touchdown(self):
         rospy.loginfo("🚀 开始沿 -Y 轴直线寻面...")
@@ -100,13 +99,13 @@ class SideContactDrawer:
         
         while not rospy.is_shutdown():
             loop_cnt += 1
-            recent_forces.append(self.current_f_total)
+            recent_forces.append(self.current_fy)
             if len(recent_forces) > verify_size:
                 recent_forces.pop(0)
                 
             if loop_cnt > 60:
                 if len(recent_forces) >= verify_size and all(f >= 12.0 for f in recent_forces):
-                    rospy.loginfo(f"🟢 判定触及纸箱表面！接触合力: {self.current_f_total:.2f} N")
+                    rospy.loginfo(f"🟢 判定触及纸箱表面！Y 轴接触力: {self.current_fy:.2f} N")
                     for _ in range(10):
                         self.vel_pub.publish(stop_cmd)
                         rospy.sleep(0.005)
@@ -195,9 +194,9 @@ class SideContactDrawer:
                 if dist_to_target < 0.005:
                     break
                     
-                draw_force_window.append(self.current_f_total)
+                draw_force_window.append(self.current_fy)
                 if len(draw_force_window) > 4: draw_force_window.pop(0)
-                f_filtered = np.mean(draw_force_window)
+                fy_filtered = np.mean(draw_force_window)
                 
                 if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.01:
                     if np.linalg.norm(curr_pos - prev_pos) < 0.0001:
@@ -208,12 +207,12 @@ class SideContactDrawer:
                     stuck_cnt = 0
                 prev_pos = curr_pos
                 
-                # 安全泄压：如果 3D 合力遇到大阻力（由于摩擦力或戳太深），更快速地往 +Y 退缩
+                # 安全泄压：如果在 -Y 轴上遇到大阻力，往 +Y 退缩
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if f_filtered > 10.0 or stuck_cnt > 8:
-                        y_offset_relief += 0.015 * dt # 泄压速度加快三倍 (15mm/s)
-                    elif f_filtered < 5.0:
-                        y_offset_relief -= 0.005 * dt # 恢复速度也相应加快
+                    if fy_filtered > 10.0 or stuck_cnt > 8:
+                        y_offset_relief += 0.005 * dt
+                    elif fy_filtered < 5.0:
+                        y_offset_relief -= 0.002 * dt
                     y_offset_relief = np.clip(y_offset_relief, 0.0, 0.015)
                 else:
                     y_offset_relief = 0.0
@@ -239,7 +238,7 @@ class SideContactDrawer:
                 self.vel_pub.publish(cmd)
                 rate.sleep()
                 
-            rospy.loginfo(f"进度: {i+1}/{len(aligned_waypoints)} | 3D合力: {self.current_f_total:.2f}N | Y退缩: {y_offset_relief:.4f}m")
+            rospy.loginfo(f"进度: {i+1}/{len(aligned_waypoints)} | Y轴向力: {self.current_fy:.2f}N | Y退缩: {y_offset_relief:.4f}m")
             
         rospy.loginfo("🛑 绘制到达终点，沿 +Y 轴向外拔出...")
         lift_cmd = TwistCommand()
