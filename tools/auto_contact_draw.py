@@ -357,8 +357,8 @@ class AutoContactDrawer:
         # --- 新增：PI 力控参数 ---
         force_integral = 0.0
         target_force = 7.0  # 期望维持的目标压力 (N)
-        kp_force = 0.001    # 比例增益 (10N 误差瞬间抬升 10mm)
-        ki_force = 0.005    # 积分增益 (10N 误差持续1秒额外抬升 50mm)
+        kp_force = 0.0003   # 比例增益调小：阻力增大 10N 时仅瞬间避让 3mm，避免直接弹飞悬空
+        ki_force = 0.002    # 积分增益调小：缓慢自适应表面起伏
         
         for i, wp in enumerate(aligned_waypoints):
             if rospy.is_shutdown():
@@ -370,7 +370,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 1.2  # 提高刚度至 1.2，适当加快走线速度
+            k_pos = 0.6  # 大幅降低刚度至 0.6，强行让机械臂“慢工出细活”，给 PI 力控留足时间
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -447,9 +447,9 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度 (提升最高限速至 0.06 m/s)
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
+                # XY 方向伺服速度 (硬限速降至 0.03 m/s，确保每一个点都扎实到位)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
                 
                 # Z 轴以纯位置控制伺服跟随 target_z
                 cmd.twist.linear_z = np.clip(k_pos * dz, -0.03, 0.03)
