@@ -52,6 +52,7 @@ def generate_custom_trajectory(config_file, pattern_name, radius, output_file):
     waypoints = []
     approach_height = 0.05 # 下探前距离表面 5cm 的安全悬空高度
     stroke_id = 0
+    wp_index = 0
     
     for stroke in pattern_2d:
         if not stroke:
@@ -62,40 +63,36 @@ def generate_custom_trajectory(config_file, pattern_name, radius, output_file):
         start_3d = center + u_start * u_axis + v_start * v_axis
         hover_pt = start_3d + approach_height * normal
         waypoints.append(Waypoint(
-            xyz=tuple(hover_pt),
-            normal=tuple(normal),
-            stroke_id=stroke_id,
-            phase="hover"
+            index=wp_index, stroke_id=stroke_id, phase="hover", face="custom", pattern=pattern_name,
+            xyz=tuple(hover_pt), normal=tuple(normal), rpy_deg=(0.0, 0.0, 0.0), pen_down=0
         ))
+        wp_index += 1
         
         # (B) 开始接触 (此时 auto_contact_draw 会触发寻面)
         waypoints.append(Waypoint(
-            xyz=tuple(start_3d),
-            normal=tuple(normal),
-            stroke_id=stroke_id,
-            phase="touch_down"
+            index=wp_index, stroke_id=stroke_id, phase="touch_down", face="custom", pattern=pattern_name,
+            xyz=tuple(start_3d), normal=tuple(normal), rpy_deg=(0.0, 0.0, 0.0), pen_down=0
         ))
+        wp_index += 1
         
         # (C) 绘制整个笔画轨迹
         for (u, v) in stroke:
             pt_3d = center + u * u_axis + v * v_axis
             waypoints.append(Waypoint(
-                xyz=tuple(pt_3d),
-                normal=tuple(normal),
-                stroke_id=stroke_id,
-                phase="draw"
+                index=wp_index, stroke_id=stroke_id, phase="draw", face="custom", pattern=pattern_name,
+                xyz=tuple(pt_3d), normal=tuple(normal), rpy_deg=(0.0, 0.0, 0.0), pen_down=1
             ))
+            wp_index += 1
             
         # (D) 画完后垂直拔出 (沿法线正方向抬升)
         u_end, v_end = stroke[-1]
         end_3d = center + u_end * u_axis + v_end * v_axis
         lift_pt = end_3d + approach_height * normal
         waypoints.append(Waypoint(
-            xyz=tuple(lift_pt),
-            normal=tuple(normal),
-            stroke_id=stroke_id,
-            phase="lift"
+            index=wp_index, stroke_id=stroke_id, phase="lift", face="custom", pattern=pattern_name,
+            xyz=tuple(lift_pt), normal=tuple(normal), rpy_deg=(0.0, 0.0, 0.0), pen_down=0
         ))
+        wp_index += 1
         
         stroke_id += 1
         
