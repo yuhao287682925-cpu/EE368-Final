@@ -484,8 +484,26 @@ class AutoContactDrawer:
                 
             rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 状态: {self.state} | Fz: {self.current_fz:.2f}N | Offset Z: {self.z_offset:.4f}m")
             
-        # 5. 绘制结束，抬笔停机
-        rospy.loginfo("🛑 绘制完毕，垂直提笔并停机...")
+        # 5. 绘制结束，垂直抬升画笔
+        rospy.loginfo("🛑 绘制完毕，开始垂直抬升画笔...")
+        
+        lift_cmd = TwistCommand()
+        lift_cmd.reference_frame = 3  # 基座坐标系
+        lift_cmd.twist.linear_x = 0.0
+        lift_cmd.twist.linear_y = 0.0
+        lift_cmd.twist.linear_z = 0.03  # 以 3cm/s 速度垂直向上抬笔
+        lift_cmd.twist.angular_x = 0.0
+        lift_cmd.twist.angular_y = 0.0
+        lift_cmd.twist.angular_z = 0.0
+        
+        # 40Hz 频率下持续 40 次循环 (1.0 秒)，总共抬升 3.0cm
+        for _ in range(40):
+            if rospy.is_shutdown():
+                break
+            self.vel_pub.publish(lift_cmd)
+            rospy.sleep(0.025)
+            
+        # 发送 15 次 0 速度锁定机械臂，确保驱动层刹停
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
         for _ in range(15):
