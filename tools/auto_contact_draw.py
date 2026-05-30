@@ -182,7 +182,7 @@ class AutoContactDrawer:
         
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 3 # 基座坐标系
-        down_cmd.twist.linear_z = -0.015 # -15mm/s 向下，跳出超低速黏滑爬行区
+        down_cmd.twist.linear_z = -0.010 # -10mm/s 向下，放慢速度以配合更长的确认窗口
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
@@ -190,9 +190,9 @@ class AutoContactDrawer:
         contact_detected = False
         loop_cnt = 0
         
-        # 引入接触判定缓存序列 (40Hz 下 5个周期约 0.12 秒)
+        # 引入接触判定缓存序列 (40Hz 下 12个周期约 0.3 秒，滤除所有瞬态冲击毛刺)
         recent_forces = []
-        verify_size = 5
+        verify_size = 12
         
         while not rospy.is_shutdown():
             loop_cnt += 1
@@ -207,10 +207,10 @@ class AutoContactDrawer:
                 
             # 起步前 1.5 秒 (约 60 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
             if loop_cnt > 60:
-                # 只有当缓存数足够，且最后连续 5 个采样周期都大于等于 7.0 N 时，才判定触及表面
+                # 只有当缓存数足够，且最后连续 verify_size 个采样周期都大于等于 7.0 N 时，才判定触及表面
                 if len(recent_forces) >= verify_size and all(f >= 7.0 for f in recent_forces):
                     rospy.loginfo(f"🟢 判定触及纸箱表面！")
-                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 5 次均 >= 7.0 N)")
+                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 7.0 N)")
                     rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fz:.2f} N")
                     
                     # 发送 10 次 0 速度，确保驱动层刹停
