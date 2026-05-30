@@ -457,16 +457,30 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度 (提升最高限速至 0.06 m/s，配合 k_pos 增加拖动能力)
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
+                # XY 方向伺服速度
+                if wp['phase'] in ['draw', 'touch_down'] and self.state == FREE_SPACE:
+                    # 绘制阶段悬空判定增强：完全悬空时停止前进，专心下探寻找接触面
+                    cmd.twist.linear_x = 0.0
+                    cmd.twist.linear_y = 0.0
+                elif wp['phase'] in ['draw', 'touch_down'] and self.state == SOFT_CONTACT:
+                    # 软接触时，用较低速度前进，等待建立稳定接触，避免运动干扰导致误判
+                    cmd.twist.linear_x = np.clip(k_pos * dx, -0.015, 0.015)
+                    cmd.twist.linear_y = np.clip(k_pos * dy, -0.015, 0.015)
+                else:
+                    # 稳定接触或非绘制状态：提升最高限速至 0.06 m/s，配合 k_pos 增加拖动能力
+                    cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
+                    cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
                 
                 # 6. Z 方向速度指令根据接触状态机来决定
                 if self.state == FREE_SPACE:
-                    # 悬空状态下，朝着标称高度运动下探，限速 15mm/s
-                    target_z_nominal = wp['z_nominal']
-                    dz_nominal = target_z_nominal - self.current_z
-                    cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.015, 0.015)
+                    if wp['phase'] in ['draw', 'touch_down']:
+                        # 在绘制阶段如果意外悬空，主动向下探寻找表面
+                        cmd.twist.linear_z = -0.008 # 8mm/s 主动寻找表面
+                    else:
+                        # 悬空状态下，朝着标称高度运动下探，限速 15mm/s
+                        target_z_nominal = wp['z_nominal']
+                        dz_nominal = target_z_nominal - self.current_z
+                        cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.015, 0.015)
                 elif self.state == SOFT_CONTACT:
                     # 软接触状态下，固定以 -2mm/s 缓慢下压
                     cmd.twist.linear_z = -0.002
