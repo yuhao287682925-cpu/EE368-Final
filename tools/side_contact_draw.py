@@ -7,7 +7,7 @@ import numpy as np
 import rospy
 import time
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import Pose, TwistCommand
+from kortex_driver.msg import TwistCommand
 from std_msgs.msg import Float64 as StdFloat64
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
