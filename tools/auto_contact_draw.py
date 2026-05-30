@@ -367,7 +367,7 @@ class AutoContactDrawer:
                 dy = target_y - self.current_y
                 dz = target_z - self.current_z
                 
-                if math.hypot(dx, dy) < 0.005: # 到位距离 5mm
+                if math.hypot(dx, dy) < 0.002: # 到位距离 2mm，更精确贴合
                     break
                     
                 cmd = TwistCommand()
@@ -419,7 +419,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 0.8  # 保持 0.8 刚度减慢运动速度确保每一个点误差极小
+            k_pos = 0.6  # 刚度降至 0.6，使移动速度更缓慢平顺
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -437,7 +437,7 @@ class AutoContactDrawer:
                 dy = target_y - self.current_y
                 dist_to_target = math.hypot(dx, dy)
                 
-                if dist_to_target < 0.005:
+                if dist_to_target < 0.002: # 允许误差减小至 2mm
                     break
                     
                 # 绘图力滑动窗口维护与平滑
@@ -465,9 +465,9 @@ class AutoContactDrawer:
                 # 单向安全泄压机制 (基于净化后的 fz_pure，带停滞避让)
                 if wp['phase'] in ['draw', 'touch_down']:
                     # 状态转移逻辑
-                    if fz_pure > 5.0 or stuck_cnt > 5:
+                    if fz_pure > 7.0 or stuck_cnt > 5:  # 抬高刹车阈值至 7.0N
                         in_relief_halt = True
-                    elif fz_pure < 3.0:
+                    elif fz_pure < 4.0:  # 相应抬高解除刹车的阈值
                         in_relief_halt = False
                         
                     # 动作执行逻辑
@@ -476,8 +476,8 @@ class AutoContactDrawer:
                         z_offset_relief += 0.015 * dt
                         if stuck_cnt > 5 and stuck_cnt % 5 == 0:
                             rospy.logwarn(f"⚠️ 物理卡死或大阻力 (stuck={stuck_cnt}, fz_pure={fz_pure:.1f})，XY停滞并极速抬笔！")
-                    elif fz_pure < 2.0:
-                        # 纯接触力偏小(<2.0N)，快速下探恢复接触 (12mm/s，防止长时间悬空)
+                    elif fz_pure < 2.5:
+                        # 纯接触力偏小(<2.5N)，快速下探恢复接触 (12mm/s，防止长时间悬空)
                         z_offset_relief -= 0.012 * dt
                         
                     # 严格限制泄压量：最大 15mm，过大会导致下探需要太长时间
@@ -505,10 +505,11 @@ class AutoContactDrawer:
                     cmd.twist.linear_x = 0.0
                     cmd.twist.linear_y = 0.0
                 else:
-                    cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
-                    cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
+                    # 将最大移动速度从 30mm/s 进一步降低到 20mm/s
+                    cmd.twist.linear_x = np.clip(k_pos * dx, -0.02, 0.02)
+                    cmd.twist.linear_y = np.clip(k_pos * dy, -0.02, 0.02)
                     
-                cmd.twist.linear_z = np.clip(k_pos * dz, -0.03, 0.03)
+                cmd.twist.linear_z = np.clip(k_pos * dz, -0.02, 0.02)
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
                 cmd.twist.angular_z = 0.0
