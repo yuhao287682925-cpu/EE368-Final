@@ -347,11 +347,11 @@ class AutoContactDrawer:
         rate = rospy.Rate(40) # 40Hz
         dt = 0.025
         
-        # 将接触状态机、滤波器缓存外提，实现跨点连续状态管理
-        self.state = FREE_SPACE
-        self.state_counter = 0
+        # 将力滤波器缓存和泄压补偿量外提，实现跨点连续状态管理
         draw_force_window = []
         draw_window_size = 4
+        z_offset_relief = 0.0  # 单向安全泄压补偿量 (0 ~ 15mm)
+        dt = 0.025
         
         for i, wp in enumerate(aligned_waypoints):
             if rospy.is_shutdown():
@@ -371,22 +371,59 @@ class AutoContactDrawer:
             
             # 位置伺服走点循环
             while not rospy.is_shutdown():
-                # 1. 采用定深下压策略 (替代动态力控)
-                fixed_press_depth = 0.003  # 固定下压深度 3mm
-                
-                if wp['phase'] in ['draw', 'touch_down']:
-                    target_z = wp['z_nominal'] - fixed_press_depth
-                else:
-                    target_z = wp['z_nominal']
-                
+                # 1. 计算与目标点的距离
                 dx = target_x - self.current_x
                 dy = target_y - self.current_y
-                dz = target_z - self.current_z
-                
                 dist_to_target = math.hypot(dx, dy)
+                
                 if dist_to_target < 0.005: # 到位距离 5mm
                     break
                     
+                # 2. 绘图力滑动窗口维护与平滑
+                draw_force_window.append(self.current_fz)
+                if len(draw_force_window) > draw_window_size:
+                    draw_force_window.pop(0)
+                fz_filtered = np.mean(draw_force_window) if len(draw_force_window) >= draw_window_size else self.current_fz
+                
+                # 3. 判定物理卡阻 (在绘制阶段且离目标点较远时)
+                if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
+                    movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
+                    if movement < 0.0003: # 单周期 XY 位移小于 0.3mm (说明拖不动了，被卡死)
+                        stuck_cnt += 1
+                    else:
+                        stuck_cnt = max(0, stuck_cnt - 1)
+                else:
+                    stuck_cnt = 0
+                    
+                prev_servo_x = self.current_x
+                prev_servo_y = self.current_y
+                
+                # 4. 单向安全泄压机制 (One-Way Relief Valve)
+                if wp['phase'] in ['draw', 'touch_down']:
+                    if fz_filtered > 6.0 or stuck_cnt > 5:
+                        # 遇到异常大阻力，或物理卡死，快速向上泄压 (5mm/s)
+                        z_offset_relief += 0.005 * dt
+                        if stuck_cnt > 5 and stuck_cnt % 5 == 0:
+                            rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
+                    elif fz_filtered < 3.0:
+                        # 阻力恢复安全范围，缓慢恢复下压 (2mm/s)
+                        z_offset_relief -= 0.002 * dt
+                        
+                    # 严格限制泄压量：最小为 0 (绝不额外深压)，最大为 15mm (抬升上限)
+                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.015)
+                else:
+                    # 提笔移动阶段，泄压量归零
+                    z_offset_relief = 0.0
+                
+                # 5. 目标高度 = 理论位置 - 基准定深 + 单向泄压补偿
+                fixed_press_depth = 0.003  # 默认固定下压深度 3mm
+                if wp['phase'] in ['draw', 'touch_down']:
+                    target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief
+                else:
+                    target_z = wp['z_nominal']
+                    
+                dz = target_z - self.current_z
+                
                 cmd = TwistCommand()
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
@@ -406,7 +443,7 @@ class AutoContactDrawer:
                 self.vel_pub.publish(cmd)
                 rate.sleep()
                 
-            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | Fz(监控): {self.current_fz:.2f}N | Target Z: {target_z:.4f}m")
+            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | Fz: {self.current_fz:.2f}N | Relief: {z_offset_relief:.4f}m | Target Z: {target_z:.4f}m")
             
         # 5. 绘制结束，到达终点后稍作停顿，平息机械臂末端抖动
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
