@@ -476,12 +476,12 @@ class AutoContactDrawer:
                         z_offset_relief += 0.015 * dt
                         if stuck_cnt > 5 and stuck_cnt % 5 == 0:
                             rospy.logwarn(f"⚠️ 物理卡死或大阻力 (stuck={stuck_cnt}, fz_pure={fz_pure:.1f})，XY停滞并极速抬笔！")
-                    elif fz_pure < 1.0:
-                        # 纯接触力极小，缓慢恢复下压
-                        z_offset_relief -= 0.002 * dt
+                    elif fz_pure < 2.0:
+                        # 纯接触力偏小(<2.0N)，快速下探恢复接触 (12mm/s，防止长时间悬空)
+                        z_offset_relief -= 0.012 * dt
                         
-                    # 严格限制泄压量：最大 25mm，应对极端的纸箱坑洼
-                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.025)
+                    # 严格限制泄压量：最大 15mm，过大会导致下探需要太长时间
+                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.015)
                 else:
                     # 提笔移动阶段，泄压量归零，解除停滞
                     z_offset_relief = 0.0
