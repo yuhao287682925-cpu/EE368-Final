@@ -87,7 +87,9 @@ class AutoContactDrawer:
         
         # 零点力校准状态
         self.fz_bias = 0.0
+        self.wrist_torque_bias = 0.0
         self.calibration_samples = []
+        self.torque_calibration_samples = []
         self.calibrated = False
         self.current_fz = 0.0
         self.raw_fz = 0.0
@@ -138,7 +140,7 @@ class AutoContactDrawer:
         raw_fz = tool_force[2]
         
         # 提取手腕末端关节 (第 6 关节) 原始力矩
-        self.wrist_torque = abs(torques[5])
+        raw_wrist_torque = torques[5]
         
         # 判定关节是否静止
         self.is_static = all(abs(v) < 0.005 for v in velocities)
@@ -146,19 +148,24 @@ class AutoContactDrawer:
         # 自动零点校准
         if not self.calibrated:
             self.calibration_samples.append(raw_fz)
+            self.torque_calibration_samples.append(raw_wrist_torque)
             if len(self.calibration_samples) >= 40:
                 self.fz_bias = np.mean(self.calibration_samples)
+                self.wrist_torque_bias = np.mean(self.torque_calibration_samples)
                 self.calibrated = True
-                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Z Bias): {self.fz_bias:.2f} N")
+                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Z Bias): {self.fz_bias:.2f} N, (Torque Bias): {self.wrist_torque_bias:.3f} Nm")
             return
             
-        # 估计末端 Z 轴向力（减去零点偏差并取绝对值）
+        # 估计末端 Z 轴向力和手腕力矩（减去零点偏差并取绝对值）
         self.current_fz = abs(raw_fz - self.fz_bias)
+        self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
         
         # 在空闲悬空且静止状态下进行温漂自动去皮（超低通偏置更新）
         if self.state == FREE_SPACE and self.is_static and self.current_fz < 2.0:
             self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * raw_fz
+            self.wrist_torque_bias = 0.9995 * self.wrist_torque_bias + 0.0005 * raw_wrist_torque
             self.current_fz = abs(raw_fz - self.fz_bias)
+            self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
             
         self.force_fz_pub.publish(Float64(self.current_fz))
 
@@ -173,6 +180,7 @@ class AutoContactDrawer:
         rospy.loginfo("⏸️ 机械臂静止中 (1.5秒)，正在平息关节残留力矩并执行高精度校零...")
         self.calibrated = False
         self.calibration_samples = []
+        self.torque_calibration_samples = []
         rospy.sleep(1.5)
         
         while not self.calibrated and not rospy.is_shutdown():
