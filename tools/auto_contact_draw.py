@@ -73,7 +73,7 @@ class AutoContactDrawer:
         self.base_target_force = 6.0  # 标称绘制压力 6.0N
         self.target_force = 6.0       # 动态目标接触力 (可衰减防卡阻)
         self.contact_threshold = 4.0  # 接触与力控激活判定阈值 4.0N
-        self.wrist_torque_threshold = 0.06 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.06 N.m
+        self.wrist_torque_threshold = 0.25 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.25 N.m (调高以防止频繁误触发抬升)
         
         self.kp_up = 0.005            # 过度按压抬升增益 (快速向上抬)
         self.kd_up = 0.001
@@ -278,12 +278,15 @@ class AutoContactDrawer:
             # 在水平方向遇到阻力（如陷入纸箱凹陷）时，比竖直方向更容易在腕部产生力矩
             # 若检测到力矩异常突变，强行注入巨大负向误差，骗过控制器立刻触发最大速度抬升
             if self.wrist_torque > self.wrist_torque_threshold:
+                rospy.logwarn_throttle(0.5, f"⚠️ 腕部力矩突变 ({self.wrist_torque:.3f} N.m)，触发紧急抬升！")
                 force_error = -10.0
             d_error = (force_error - self.prev_force_error) / dt if dt > 0 else 0.0
             self.prev_force_error = force_error
             
             if force_error < -1.0:
                 # 超过目标力 1.0N 时才允许快速抬升，极力避免因摩擦等干扰导致误判悬空
+                if force_error != -10.0:
+                    rospy.loginfo_throttle(0.5, f"⬆️ 接触压力过大 (Fz={fz_val:.2f}N > 目标{self.target_force:.1f}N)，执行常规抬升")
                 v_z_comp = -(self.kp_up * (force_error + 1.0) + self.kd_up * d_error)
             elif force_error < 0:
                 # 处于 [目标力, 目标力+1.0N] 的冗余过度按压区间内，不抬升，维持当前高度
