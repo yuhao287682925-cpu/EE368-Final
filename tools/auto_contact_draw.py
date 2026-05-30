@@ -70,15 +70,15 @@ class AutoContactDrawer:
         self.state_counter = 0 # 状态迟滞校验帧计数器
         
         # 核心力控与对刀判定参数
-        self.base_target_force = 4.0  # 标称绘制压力 4.0N
-        self.target_force = 4.0       # 动态目标接触力 (可衰减防卡阻)
-        self.contact_threshold = 2.5  # 接触与力控激活判定阈值 2.5N
+        self.base_target_force = 4.5  # 标称绘制压力 4.5N
+        self.target_force = 4.5       # 动态目标接触力 (可衰减防卡阻)
+        self.contact_threshold = 3.0  # 接触与力控激活判定阈值 3.0N
         self.wrist_torque_threshold = 0.06 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.06 N.m
         
-        self.kp_up = 0.005            # 过度按压抬升增益 (快速向上抬)
-        self.kd_up = 0.001
-        self.kp_down = 0.0008         # 接触不足下压增益 (缓慢向下压)
-        self.kd_down = 0.0001
+        self.kp_up = 0.003            # 过度按压抬升增益 (减小)
+        self.kd_up = 0.0008
+        self.kp_down = 0.0015         # 接触不足下压增益 (增加)
+        self.kd_down = 0.0002
         
         self.max_step = 0.01          # 单周期最大位移微调量
         self.z_offset = 0.0           # 虚拟 Z 轴力控累积位移 (用于防飞车限位)
@@ -207,10 +207,10 @@ class AutoContactDrawer:
                 
             # 起步前 1.5 秒 (约 60 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
             if loop_cnt > 60:
-                # 只有当缓存数足够，且最后连续 5 个采样周期都大于等于 4.5 N 时，才判定触及表面
-                if len(recent_forces) >= verify_size and all(f >= 4.5 for f in recent_forces):
+                # 只有当缓存数足够，且最后连续 5 个采样周期都大于等于 7.0 N 时，才判定触及表面
+                if len(recent_forces) >= verify_size and all(f >= 7.0 for f in recent_forces):
                     rospy.loginfo(f"🟢 判定触及纸箱表面！")
-                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 5 次均 >= 4.5 N)")
+                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 5 次均 >= 7.0 N)")
                     rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fz:.2f} N")
                     
                     # 发送 10 次 0 速度，确保驱动层刹停
@@ -394,7 +394,7 @@ class AutoContactDrawer:
                 
                 # 2. 接触状态机跳转逻辑
                 if self.state == FREE_SPACE:
-                    if fz_filtered > 2.5:
+                    if fz_filtered > 3.0:
                         self.state_counter += 1
                         if self.state_counter >= 6:
                             self.state = SOFT_CONTACT
@@ -404,13 +404,13 @@ class AutoContactDrawer:
                         self.state_counter = 0
                         
                 elif self.state == SOFT_CONTACT:
-                    if fz_filtered > 3.5:
+                    if fz_filtered > 4.0:
                         self.state_counter += 1
                         if self.state_counter >= 6:
                             self.state = HARD_CONTACT
                             self.state_counter = 0
                             rospy.loginfo(f"🔴 状态转移: SOFT_CONTACT -> HARD_CONTACT (Fz={fz_filtered:.2f}N)")
-                    elif fz_filtered < 1.5:
+                    elif fz_filtered < 2.0:
                         self.state = FREE_SPACE
                         self.state_counter = 0
                         draw_force_window = []  # 悬空时清空窗口
@@ -419,7 +419,7 @@ class AutoContactDrawer:
                         self.state_counter = 0
                         
                 elif self.state == HARD_CONTACT:
-                    if fz_filtered < 2.5:
+                    if fz_filtered < 3.0:
                         self.state_counter += 1
                         if self.state_counter >= 8:
                             self.state = SOFT_CONTACT
@@ -444,7 +444,7 @@ class AutoContactDrawer:
                 # 4. 动态调整目标压力
                 if self.state == HARD_CONTACT and stuck_cnt >= 6:
                     # 目标力自适应衰减 (提早介入，从第 6 个卡阻周期开始更激进地平滑衰减)
-                    self.target_force = max(1.5, self.base_target_force - 0.6 * (stuck_cnt - 5))
+                    self.target_force = max(2.0, self.base_target_force - 0.6 * (stuck_cnt - 5))
                     if stuck_cnt % 6 == 0:
                         rospy.logwarn(f"⚠️ 末端可能卡阻 (stuck_cnt={stuck_cnt})，降低目标压力至 {self.target_force:.2f}N")
                 else:
