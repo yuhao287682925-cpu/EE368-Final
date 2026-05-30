@@ -60,11 +60,11 @@ class AutoContactDrawer:
                                    [-math.pi/2, 0, 235/1000, 0-math.pi/2]])
         self.arm_model = NLinkArm(dh_params_list)
         
-        # 核心力控参数：13N 目标压力，直接阈值激活门槛 1.0N，力控死区 2.0N
+        # 核心力控参数：13N 目标压力，直接激活门槛 1.0N，力控死区 2.0N
         self.desired_force = 13.0
         self.activation_force_threshold = 1.0
         self.force_deadzone = 2.0
-        self.wrist_torque_threshold = 1.5  # 手腕力矩避障阈值调高至 1.5 N.m
+        self.wrist_torque_threshold = 1.5  # 手腕力矩避障阈值 1.5 N.m
         
         # 非对称 PD 增益：抬起快 (0.005)，下压慢 (0.0008)
         self.kp_up = 0.005
@@ -82,16 +82,19 @@ class AutoContactDrawer:
         self.escape_duration = 1.5    # 逃逸期挂起 XY 轨迹 1.5 秒
         self.escape_z_lift = 0.010     # 逃逸期间垂直向上抬升 10mm
         
-        # 零点力校准状态
+        # 零点力校准状态与姿态自适应多项式系数 (fz_bias = a * R + b)
         self.fz_bias = 0.0
         self.wrist_torque_bias = 0.0
+        self.gravity_coeffs = None    # 重力拟合一元一次方程系数 [a, b]
+        
         self.calibration_samples = []
         self.torque_calibration_samples = []
         self.calibrated = False
-        self.allow_dynamic_calibration = True  # 允许去皮的开关
+        self.allow_dynamic_calibration = True  # 允许温漂去皮的开关 (仅在扫描前和扫描中开启)
         
         self.current_fz = 0.0
         self.raw_fz = 0.0
+        self.raw_wrist_torque = 0.0
         self.is_static = True
         self.wrist_torque = 0.0
         self.prev_force_error = 0.0
@@ -144,34 +147,40 @@ class AutoContactDrawer:
         # 2. 求解基础雅可比矩阵并计算估计力
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
-        raw_fz = tool_force[2]
+        self.raw_fz = tool_force[2]
         
         # 提取手腕末端关节 (第 6 关节) 原始力矩
-        raw_wrist_torque = torques[5]
+        self.raw_wrist_torque = torques[5]
         
         # 判定关节是否静止
         self.is_static = all(abs(v) < 0.005 for v in velocities)
         
         # 自动零点校准
         if not self.calibrated:
-            self.calibration_samples.append(raw_fz)
-            self.torque_calibration_samples.append(raw_wrist_torque)
+            self.calibration_samples.append(self.raw_fz)
+            self.torque_calibration_samples.append(self.raw_wrist_torque)
             if len(self.calibration_samples) >= 40:
                 self.fz_bias = np.mean(self.calibration_samples)
                 self.wrist_torque_bias = np.mean(self.torque_calibration_samples)
                 self.calibrated = True
             return
             
+        # ⚠️ 【姿态自适应重力补偿】
+        # 如果已经完成了悬空重力曲线拟合，则根据实时延伸半径 R 动态修正 fz_bias，彻底剔除重力力臂变化的干扰
+        if self.gravity_coeffs is not None:
+            current_r = math.hypot(self.current_x, self.current_y)
+            self.fz_bias = self.gravity_coeffs[0] * current_r + self.gravity_coeffs[1]
+            
         # 估计末端 Z 轴向力和手腕力矩（减去零点偏差并取绝对值）
-        self.current_fz = abs(raw_fz - self.fz_bias)
-        self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
+        self.current_fz = abs(self.raw_fz - self.fz_bias)
+        self.wrist_torque = abs(self.raw_wrist_torque - self.wrist_torque_bias)
         
-        # 在去皮允许且静止状态下进行温漂自动去皮（超低通偏置更新，用于空载）
+        # 在允许且静止状态下进行温漂去皮（超低通偏置更新，仅在开始绘制前开启，绘制中锁死）
         if self.allow_dynamic_calibration and self.is_static and self.current_fz < 2.0:
-            self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * raw_fz
-            self.wrist_torque_bias = 0.9995 * self.wrist_torque_bias + 0.0005 * raw_wrist_torque
-            self.current_fz = abs(raw_fz - self.fz_bias)
-            self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
+            self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * self.raw_fz
+            self.wrist_torque_bias = 0.9995 * self.wrist_torque_bias + 0.0005 * self.raw_wrist_torque
+            self.current_fz = abs(self.raw_fz - self.fz_bias)
+            self.wrist_torque = abs(self.raw_wrist_torque - self.wrist_torque_bias)
             
         self.force_fz_pub.publish(Float64(self.current_fz))
 
@@ -246,7 +255,7 @@ class AutoContactDrawer:
         z_rough = self.current_z
         rospy.loginfo(f"📍 粗定位接触高度 Z: {z_rough:.4f} m")
         
-        # 阶段 2：向上回抬 5mm 悬空进行最高精度的静态重力偏置去皮
+        # 阶段 2：向上回抬 5mm 悬空准备后续的多点扫描
         rospy.loginfo("⬆️ 正在向上回抬 5mm 悬空...")
         lift_calib_cmd = TwistCommand()
         lift_calib_cmd.reference_frame = 3
@@ -265,51 +274,7 @@ class AutoContactDrawer:
             self.vel_pub.publish(stop_cmd)
             rospy.sleep(0.01)
             
-        rospy.loginfo("⏸️ 机械臂静止中 (1.5秒)，正在执行原位高精度静态去皮校零...")
-        self.reset_calibration()
-        rospy.sleep(1.5)
-        while not self.calibrated and not rospy.is_shutdown():
-            rospy.sleep(0.05)
-        rospy.loginfo(f"✅ 原位静态校零完成！(Z Bias): {self.fz_bias:.2f} N, (Torque Bias): {self.wrist_torque_bias:.3f} Nm")
-        
-        # 阶段 3：以极慢速度 3mm/s 二次精细贴合寻面，锁定高精度对刀原点
-        rospy.loginfo("🚀 开始二次精细贴合寻面...")
-        fine_down_cmd = TwistCommand()
-        fine_down_cmd.reference_frame = 3
-        fine_down_cmd.twist.linear_z = -0.003 # 3mm/s
-        
-        fine_contact_detected = False
-        loop_cnt_fine = 0
-        recent_forces_fine = []
-        fine_limit = 3.0  # 二次寻面力阈值定为更小的 3.0N，防止预压挤压纸面
-        
-        while not rospy.is_shutdown():
-            loop_cnt_fine += 1
-            recent_forces_fine.append(self.current_fz)
-            if len(recent_forces_fine) > verify_size:
-                recent_forces_fine.pop(0)
-                
-            if loop_cnt_fine > 20:
-                if len(recent_forces_fine) >= verify_size and all(f >= fine_limit for f in recent_forces_fine):
-                    rospy.loginfo("🟢 [二次贴合触发] 二次对刀接触锁定！")
-                    for _ in range(10):
-                        self.vel_pub.publish(stop_cmd)
-                        rospy.sleep(0.005)
-                    fine_contact_detected = True
-                    break
-            self.vel_pub.publish(fine_down_cmd)
-            rate.sleep()
-            
-        if fine_contact_detected:
-            rospy.sleep(0.5) # 等待彻底静止
-            current_pose = Pose()
-            current_pose.position.x = self.current_x
-            current_pose.position.y = self.current_y
-            current_pose.position.z = self.current_z
-            rospy.loginfo(f"📍 最终高精度接触起点锁定: X={current_pose.position.x:.4f}, Y={current_pose.position.y:.4f}, Z={current_pose.position.z:.4f}")
-            return current_pose
-        else:
-            raise RuntimeError("精细下探程序异常终止")
+        return z_rough
 
     def update_force_control(self, fz_val, dt=0.025):
         """
@@ -364,9 +329,13 @@ class AutoContactDrawer:
             elif self.z_offset <= self.min_z_offset and v_z_comp < 0.0:
                 v_z_comp = 0.0
             
-            # 计算该周期的位置改变量并累积，消除稳态力误差
+            # 计算该周期实际位置调整量：dz = v_z_comp * dt
             dz = v_z_comp * dt
+            
+            # 饱和限制：单周期 Z 轴位置调整量不超过 0.01m (1cm)
             dz = np.clip(dz, -0.01, 0.01)
+            
+            # 稳态补偿：累积 Z 轴偏移量，消除静态力误差
             self.z_offset = self.z_offset + dz
             
         # 触发防飞车硬限幅保护 (下压限制在 -10mm 以内，安全防线)
@@ -396,10 +365,172 @@ class AutoContactDrawer:
                     'phase': row['phase']
                 })
         
-        # 2. 全自动下探寻面 (匀速下行去皮 + 原位静态重校准)
-        contact_pose = self.run_auto_touchdown()
+        # 2. 全自动下探寻面 (仅获得粗糙的对刀点坐标 z_rough)
+        z_rough = self.run_auto_touchdown()
         
-        # 3. 动态轨迹原点对齐
+        # 为了能够在悬空状态下进行多点扫描，我们先在此处对 aligned_waypoints 进行临时原点对齐
+        u_ref_x = raw_waypoints[0]['x']
+        u_ref_y = raw_waypoints[0]['y']
+        
+        temp_aligned_waypoints = []
+        for wp in raw_waypoints:
+            aligned_wp = {
+                'x': self.current_x + (wp['x'] - u_ref_x),
+                'y': self.current_y + (wp['y'] - u_ref_y),
+                'z_nominal': z_rough + (wp['z_nominal'] - raw_waypoints[0]['z_nominal']),
+                'nx': wp['nx'],
+                'ny': wp['ny'],
+                'nz': wp['nz'],
+                'phase': wp['phase'],
+                'stroke_id': wp['stroke_id']
+            }
+            temp_aligned_waypoints.append(aligned_wp)
+            
+        rate = rospy.Rate(40) # 40Hz
+        dt = 0.025
+        
+        stop_cmd = TwistCommand()
+        stop_cmd.reference_frame = 3
+        
+        # --- 3. ⚠️ 【重构关键：悬空径向重力面特征采样】 ---
+        rospy.loginfo("🔄 正在进行悬空径向重力面特征扫描与多点采样...")
+        
+        # 提取 5 个特征点 (起点、中点、终点、以及包围盒 X/Y 最大点)
+        sample_indices = [
+            0,
+            len(temp_aligned_waypoints) // 2,
+            len(temp_aligned_waypoints) - 1
+        ]
+        idx_max_x = max(range(len(temp_aligned_waypoints)), key=lambda idx: temp_aligned_waypoints[idx]['x'])
+        idx_max_y = max(range(len(temp_aligned_waypoints)), key=lambda idx: temp_aligned_waypoints[idx]['y'])
+        sample_indices.extend([idx_max_x, idx_max_y])
+        sample_indices = sorted(list(set(sample_indices)))
+        
+        r_samples = []
+        f_samples = []
+        t_samples = []
+        
+        scan_z = z_rough + 0.005 # Z 轴始终保持 5mm 安全悬空高度
+        k_pos_scan = 1.5
+        
+        for idx in sample_indices:
+            wp_s = temp_aligned_waypoints[idx]
+            target_x = wp_s['x']
+            target_y = wp_s['y']
+            
+            rospy.loginfo(f"📍 扫描采样特征点: X={target_x:.4f}, Y={target_y:.4f}")
+            
+            # 伺服运动至目标 XY 点且 Z 轴保持 scan_z
+            while not rospy.is_shutdown():
+                dx = target_x - self.current_x
+                dy = target_y - self.current_y
+                dz = scan_z - self.current_z
+                
+                dist_to_target = math.hypot(dx, dy)
+                if dist_to_target < 0.001:  # 到位 1mm 即可，快速扫描
+                    break
+                    
+                cmd = TwistCommand()
+                cmd.reference_frame = 3
+                cmd.twist.linear_x = np.clip(k_pos_scan * dx, -0.06, 0.06)
+                cmd.twist.linear_y = np.clip(k_pos_scan * dy, -0.06, 0.06)
+                cmd.twist.linear_z = np.clip(k_pos_scan * dz, -0.015, 0.015)
+                
+                self.vel_pub.publish(cmd)
+                rate.sleep()
+                
+            # 到位后停顿 0.15 秒平息抖动
+            for _ in range(6):
+                self.vel_pub.publish(stop_cmd)
+                rospy.sleep(0.025)
+                
+            # 收集该采样点下的径向半径 R、原始 Fz 估计值以及手腕力矩测量值
+            current_r = math.hypot(self.current_x, self.current_y)
+            r_samples.append(current_r)
+            f_samples.append(self.raw_fz)
+            t_samples.append(self.raw_wrist_torque)
+            
+        # 4. 执行一元一次线性拟合：Fz_bias = a * R + b，得到重力随半径变动的函数系数
+        a, b = np.polyfit(r_samples, f_samples, 1)
+        self.gravity_coeffs = [a, b]
+        
+        # 将各扫描点的手腕力矩平均值重设为静态去皮偏置
+        self.wrist_torque_bias = np.mean(t_samples)
+        self.calibrated = True
+        
+        rospy.loginfo(f"📊 [重力偏置拟合成功] 公式: Fz_bias = {a:.2f} * R + ({b:.2f})")
+        rospy.loginfo(f"📊 [手腕扭矩偏置重设] Wrist Torque Bias: {self.wrist_torque_bias:.3f} Nm")
+        
+        # 5. 扫描结束后，平稳移回轨迹起点上方 5mm 处，准备进行精细下探
+        rospy.loginfo("🔄 移动回起点上方，准备二次精细贴合寻面...")
+        start_wp = temp_aligned_waypoints[0]
+        target_x = start_wp['x']
+        target_y = start_wp['y']
+        
+        while not rospy.is_shutdown():
+            dx = target_x - self.current_x
+            dy = target_y - self.current_y
+            dz = scan_z - self.current_z
+            
+            dist_to_target = math.hypot(dx, dy)
+            if dist_to_target < 0.001:
+                break
+                
+            cmd = TwistCommand()
+            cmd.reference_frame = 3
+            cmd.twist.linear_x = np.clip(k_pos_scan * dx, -0.06, 0.06)
+            cmd.twist.linear_y = np.clip(k_pos_scan * dy, -0.06, 0.06)
+            cmd.twist.linear_z = np.clip(k_pos_scan * dz, -0.015, 0.015)
+            
+            self.vel_pub.publish(cmd)
+            rate.sleep()
+            
+        # 停顿一下以平息惯性
+        for _ in range(10):
+            self.vel_pub.publish(stop_cmd)
+            rospy.sleep(0.01)
+            
+        # 6. 利用已激活的自适应姿态去皮重新执行二次慢速精细下探
+        rospy.loginfo("🚀 开始二次精细贴合寻面...")
+        fine_down_cmd = TwistCommand()
+        fine_down_cmd.reference_frame = 3
+        fine_down_cmd.twist.linear_z = -0.003 # 3mm/s 慢速下探
+        
+        fine_contact_detected = False
+        loop_cnt_fine = 0
+        recent_forces_fine = []
+        fine_limit = 3.0
+        verify_size_fine = 5
+        
+        while not rospy.is_shutdown():
+            loop_cnt_fine += 1
+            recent_forces_fine.append(self.current_fz)
+            if len(recent_forces_fine) > verify_size_fine:
+                recent_forces_fine.pop(0)
+                
+            if loop_cnt_fine > 20:
+                if len(recent_forces_fine) >= verify_size_fine and all(f >= fine_limit for f in recent_forces_fine):
+                    rospy.loginfo("🟢 [二次贴合触发] 二次对刀接触锁定！")
+                    for _ in range(10):
+                        self.vel_pub.publish(stop_cmd)
+                        rospy.sleep(0.005)
+                    fine_contact_detected = True
+                    break
+            self.vel_pub.publish(fine_down_cmd)
+            rate.sleep()
+            
+        if fine_contact_detected:
+            rospy.sleep(0.5) # 等待彻底静止
+            contact_pose = Pose()
+            contact_pose.position.x = self.current_x
+            contact_pose.position.y = self.current_y
+            contact_pose.position.z = self.current_z
+            rospy.loginfo(f"📍 最终高精度接触起点锁定: X={contact_pose.position.x:.4f}, Y={contact_pose.position.y:.4f}, Z={contact_pose.position.z:.4f}")
+        else:
+            raise RuntimeError("精细下探程序异常终止")
+            
+        # 7. 基于这高精度的二次接触点，重新在线生成对准后的轨迹
+        rospy.loginfo("🔄 重新在线对齐最终绘制轨迹...")
         first_draw_idx = 0
         for idx, wp in enumerate(raw_waypoints):
             if wp['phase'] in ['draw', 'touch_down']:
@@ -410,7 +541,6 @@ class AutoContactDrawer:
         u_ref_y = raw_waypoints[first_draw_idx]['y']
         u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
         
-        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹...")
         aligned_waypoints = []
         for wp in raw_waypoints:
             aligned_wp = {
@@ -426,16 +556,10 @@ class AutoContactDrawer:
             aligned_waypoints.append(aligned_wp)
             
         rospy.loginfo("✅ 轨迹对准成功！开始启动高频速度伺服绘图...")
-        self.allow_dynamic_calibration = False  # 锁死零偏，防止拐角停顿时外界反力污染偏置
+        self.allow_dynamic_calibration = False  # 锁死温漂去皮更新
         rospy.loginfo("🔒 偏置锁定生效，禁止动态去皮更新。")
         
-        # 4. 高频速度伺服跟踪与力控循环
-        rate = rospy.Rate(40) # 40Hz
-        dt = 0.025
-        
-        stop_cmd = TwistCommand()
-        stop_cmd.reference_frame = 3
-        
+        # 8. 高频速度伺服跟踪与力控循环
         draw_force_window = []
         draw_window_size = 8  # 增加滤波窗口至 8 帧，滤除高频水平滑动摩擦突变
         
@@ -574,7 +698,7 @@ class AutoContactDrawer:
                 
             rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | Fz: {self.current_fz:.2f}N | Offset Z: {self.z_offset:.4f}m")
             
-        # 5. 绘制结束，到达终点后稍作停顿，平息机械臂末端抖动
+        # 9. 绘制结束，到达终点后稍作停顿，平息机械臂末端抖动
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
         
         pause_cmd = TwistCommand()
