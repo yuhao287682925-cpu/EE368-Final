@@ -91,6 +91,7 @@ class AutoContactDrawer:
         self.calibration_samples = []
         self.torque_calibration_samples = []
         self.calibrated = False
+        self.allow_dynamic_calibration = True  # 允许动态温漂去皮的开关
         self.current_fz = 0.0
         self.raw_fz = 0.0
         self.is_static = True
@@ -168,7 +169,7 @@ class AutoContactDrawer:
         self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
         
         # 在空闲悬空且静止状态下进行温漂自动去皮（超低通偏置更新）
-        if self.state == FREE_SPACE and self.is_static and self.current_fz < 2.0:
+        if self.allow_dynamic_calibration and self.state == FREE_SPACE and self.is_static and self.current_fz < 2.0:
             self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * raw_fz
             self.wrist_torque_bias = 0.9995 * self.wrist_torque_bias + 0.0005 * raw_wrist_torque
             self.current_fz = abs(raw_fz - self.fz_bias)
@@ -290,7 +291,7 @@ class AutoContactDrawer:
         loop_cnt_fine = 0
         recent_forces_fine = []
         verify_size_fine = 5
-        fine_limit = 5.0 # 极准偏置下的平稳接触力阈值
+        fine_limit = 3.0  # 降低微小对刀接触力阈值以防过度挤压纸箱
         
         while not rospy.is_shutdown():
             loop_cnt_fine += 1
@@ -339,8 +340,8 @@ class AutoContactDrawer:
         v_z_comp = 0.0
         
         if state == FREE_SPACE:
-            # 1. 悬空状态下，z_offset 以较快的漏损系数平滑收敛归零，不计算力控速度
-            self.z_offset = 0.95 * self.z_offset
+            # 1. 悬空状态下，z_offset 以较缓的漏损系数平滑收敛归零，防止抖动导致剧烈缩回
+            self.z_offset = 0.98 * self.z_offset
             self.prev_force_error = 0.0
             
         elif state == SOFT_CONTACT:
@@ -437,6 +438,8 @@ class AutoContactDrawer:
             aligned_waypoints.append(aligned_wp)
             
         rospy.loginfo("✅ 轨迹对准成功！开始启动高频速度伺服绘图...")
+        self.allow_dynamic_calibration = False  # 开始绘制，锁定零偏，防止拐角静止时污染偏置
+        rospy.loginfo("🔒 偏置锁定生效，禁止动态去皮更新。")
         
         # 4. 高频速度伺服跟踪与力控循环
         rate = rospy.Rate(40) # 40Hz
@@ -490,41 +493,41 @@ class AutoContactDrawer:
                     draw_force_window.pop(0)
                 fz_filtered = np.mean(draw_force_window) if len(draw_force_window) >= draw_window_size else self.current_fz
                 
-                # 2. 接触状态机跳转逻辑
+                # 2. 接触状态机跳转逻辑 (引入更宽的迟滞区间，消除临界受力点的状态横跳)
                 if self.state == FREE_SPACE:
-                    if fz_filtered > 3.5:
-                        self.state_counter += 1
-                        if self.state_counter >= 6:
-                            self.state = SOFT_CONTACT
-                            self.state_counter = 0
-                            rospy.loginfo(f"🟠 状态转移: FREE_SPACE -> SOFT_CONTACT (Fz={fz_filtered:.2f}N)")
-                    else:
-                        self.state_counter = 0
-                        
+                     if fz_filtered > 2.2:
+                         self.state_counter += 1
+                         if self.state_counter >= 5:
+                             self.state = SOFT_CONTACT
+                             self.state_counter = 0
+                             rospy.loginfo(f"🟠 状态转移: FREE_SPACE -> SOFT_CONTACT (Fz={fz_filtered:.2f}N)")
+                     else:
+                         self.state_counter = 0
+                         
                 elif self.state == SOFT_CONTACT:
-                    if fz_filtered > 5.0:
-                        self.state_counter += 1
-                        if self.state_counter >= 6:
-                            self.state = HARD_CONTACT
-                            self.state_counter = 0
-                            rospy.loginfo(f"🔴 状态转移: SOFT_CONTACT -> HARD_CONTACT (Fz={fz_filtered:.2f}N)")
-                    elif fz_filtered < 2.5:
-                        self.state = FREE_SPACE
-                        self.state_counter = 0
-                        draw_force_window = []  # 悬空时清空窗口
-                        rospy.loginfo(f"🔵 状态转移: SOFT_CONTACT -> FREE_SPACE (完全悬空, Fz={fz_filtered:.2f}N)")
-                    else:
-                        self.state_counter = 0
-                        
+                     if fz_filtered > 4.0:
+                         self.state_counter += 1
+                         if self.state_counter >= 5:
+                             self.state = HARD_CONTACT
+                             self.state_counter = 0
+                             rospy.loginfo(f"🔴 状态转移: SOFT_CONTACT -> HARD_CONTACT (Fz={fz_filtered:.2f}N)")
+                     elif fz_filtered < 1.2:
+                         self.state = FREE_SPACE
+                         self.state_counter = 0
+                         draw_force_window = []  # 悬空时清空窗口
+                         rospy.loginfo(f"🔵 状态转移: SOFT_CONTACT -> FREE_SPACE (完全悬空, Fz={fz_filtered:.2f}N)")
+                     else:
+                         self.state_counter = 0
+                         
                 elif self.state == HARD_CONTACT:
-                    if fz_filtered < 3.5:
-                        self.state_counter += 1
-                        if self.state_counter >= 8:
-                            self.state = SOFT_CONTACT
-                            self.state_counter = 0
-                            rospy.loginfo(f"🟠 状态转移: HARD_CONTACT -> SOFT_CONTACT (力不足退回, Fz={fz_filtered:.2f}N)")
-                    else:
-                        self.state_counter = 0
+                     if fz_filtered < 3.0:
+                         self.state_counter += 1
+                         if self.state_counter >= 5:
+                             self.state = SOFT_CONTACT
+                             self.state_counter = 0
+                             rospy.loginfo(f"🟠 状态转移: HARD_CONTACT -> SOFT_CONTACT (力不足退回, Fz={fz_filtered:.2f}N)")
+                     else:
+                         self.state_counter = 0
                     
                 # 3. 判定卡阻逻辑 (在绘制阶段且离目标点较远时)
                 if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
