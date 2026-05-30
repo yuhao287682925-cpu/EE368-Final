@@ -268,9 +268,12 @@ class AutoContactDrawer:
             d_error = (force_error - self.prev_force_error) / dt if dt > 0 else 0.0
             self.prev_force_error = force_error
             
-            if force_error < 0:
-                # 过度按压，快速抬升
-                v_z_comp = -(self.kp_up * force_error + self.kd_up * d_error)
+            if force_error < -1.5:
+                # 超过目标力 1.5N 时才允许快速抬升，极力避免因摩擦等干扰导致误判悬空
+                v_z_comp = -(self.kp_up * (force_error + 1.5) + self.kd_up * d_error)
+            elif force_error < 0:
+                # 处于 [目标力, 目标力+1.5N] 的冗余过度按压区间内，不抬升，维持当前高度
+                v_z_comp = 0.0
             else:
                 # 压力不足，缓慢下压
                 v_z_comp = -(self.kp_down * force_error + self.kd_down * d_error)
