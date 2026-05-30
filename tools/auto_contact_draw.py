@@ -368,6 +368,7 @@ class AutoContactDrawer:
             stuck_cnt = 0
             prev_servo_x = self.current_x
             prev_servo_y = self.current_y
+            target_z = wp['z_nominal'] # 初始化 target_z，防止循环直接 break 导致未赋值
             
             # 位置伺服走点循环
             while not rospy.is_shutdown():
