@@ -401,17 +401,17 @@ class AutoContactDrawer:
                 
                 # 4. 单向安全泄压机制 (One-Way Relief Valve)
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if fz_filtered > 8.0 or stuck_cnt > 8:
-                        # 遇到真实异常大阻力(>8N)，或物理卡死，快速向上泄压 (12mm/s，加强抬升响应)
-                        z_offset_relief += 0.012 * dt
+                    if fz_filtered > 9.0 or stuck_cnt > 8:
+                        # 折中抬升参数：遇到阻力(>9N)时，以 8mm/s 的速度适度抬升
+                        z_offset_relief += 0.008 * dt
                         if stuck_cnt > 8 and stuck_cnt % 5 == 0:
                             rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
                     elif fz_filtered < 4.5:
-                        # 阻力恢复安全范围(<4.5N)，缓慢恢复下压 (2mm/s)
-                        z_offset_relief -= 0.002 * dt
+                        # 阻力恢复安全范围(<4.5N)，下压恢复速度适当调快至 4mm/s，防止抬升过多后下压太慢导致一直悬空
+                        z_offset_relief -= 0.004 * dt
                         
-                    # 严格限制泄压量：最小为 0 (绝不额外深压)，最大为 25mm (放宽抬升上限，加强抬升能力)
-                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.025)
+                    # 严格限制泄压量：最小为 0 (绝不额外深压)，最大为 18mm (限制抬升上限，避免抬得过高)
+                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.018)
                 else:
                     # 提笔移动阶段，泄压量归零
                     z_offset_relief = 0.0
