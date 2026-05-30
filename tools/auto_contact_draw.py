@@ -360,7 +360,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 0.8  # 降低刚度至 0.8，实现顺应性拖动
+            k_pos = 1.2  # 提高刚度至 1.2，适当加快走线速度
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -457,9 +457,9 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度 (限幅从 0.025 提升到 0.04 m/s，提升拖动能力)
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.04, 0.04)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.04, 0.04)
+                # XY 方向伺服速度 (提升最高限速至 0.06 m/s，配合 k_pos 增加拖动能力)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
                 
                 # 6. Z 方向速度指令根据接触状态机来决定
                 if self.state == FREE_SPACE:
@@ -484,8 +484,18 @@ class AutoContactDrawer:
                 
             rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 状态: {self.state} | Fz: {self.current_fz:.2f}N | Offset Z: {self.z_offset:.4f}m")
             
-        # 5. 绘制结束，垂直抬升画笔
-        rospy.loginfo("🛑 绘制完毕，开始垂直抬升画笔...")
+        # 5. 绘制结束，到达终点后稍作停顿，平息机械臂末端抖动
+        rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
+        
+        pause_cmd = TwistCommand()
+        pause_cmd.reference_frame = 3
+        for _ in range(40): # 停顿 1.0 秒 (40Hz)
+            if rospy.is_shutdown():
+                break
+            self.vel_pub.publish(pause_cmd)
+            rospy.sleep(0.025)
+            
+        rospy.loginfo("⬆️ 开始垂直抬升画笔...")
         
         lift_cmd = TwistCommand()
         lift_cmd.reference_frame = 3  # 基座坐标系
