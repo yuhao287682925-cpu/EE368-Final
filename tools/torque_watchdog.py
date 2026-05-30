@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import rospy
-import math
 import numpy as np
 from kortex_driver.msg import BaseCyclic_Feedback
 from kortex_driver.srv import Stop
@@ -31,35 +30,31 @@ class TorqueWatchdog:
             return
             
         try:
-            fx = msg.base.tool_external_wrench_force_x
-            fy = msg.base.tool_external_wrench_force_y
-            fz = msg.base.tool_external_wrench_force_z
-            # 计算三维空间的总合力 (无论哪个方向撞击都能检测到)
-            f_total = math.sqrt(fx**2 + fy**2 + fz**2)
+            fz = abs(msg.base.tool_external_wrench_force_z)
         except AttributeError:
-            f_total = 0.0 
+            fz = 0.0 
             
         torques = [abs(actuator.torque) for actuator in msg.actuators]
         max_torque = max(torques) if torques else 0.0
         
         # 1. 自动状态机判断
         current_state = ""
-        if f_total < self.force_z_min:
+        if fz < self.force_z_min:
             current_state = "⚪ 未触碰 (悬空)"
-        elif f_total <= self.force_z_max:
+        elif fz <= self.force_z_max:
             current_state = "🟢 正常画图 (接触良好)"
         else:
             current_state = "🔴 弯折风险 (超载)"
 
         # 2. 状态改变时，或者大概每秒打印一次
         if current_state != self.last_state or np.random.rand() < 0.02: 
-            rospy.loginfo(f"状态: {current_state} | 笔尖总受力: {f_total:.2f} N | 最大关节力矩: {max_torque:.2f} Nm")
+            rospy.loginfo(f"状态: {current_state} | Z轴受力: {fz:.2f} N | 最大关节力矩: {max_torque:.2f} Nm")
             self.last_state = current_state
 
         # 3. 触发物理急停逻辑 (保护硬件)
-        if f_total > self.force_z_max or max_torque > self.joint_torque_limit:
+        if fz > self.force_z_max or max_torque > self.joint_torque_limit:
             rospy.logerr(f"🚨 危险！检测到极度异常的机械对抗力！机械臂可能要被掰坏了！")
-            rospy.logerr(f"当前笔尖总受力: {f_total:.2f} N (限值: {self.force_z_max} N)")
+            rospy.logerr(f"当前笔尖 Z 轴受力: {fz:.2f} N (限值: {self.force_z_max} N)")
             rospy.logerr(f"当前最大关节力矩: {max_torque:.2f} Nm (限值: {self.joint_torque_limit} Nm)")
             rospy.logerr("正在触发物理急停服务...")
             
