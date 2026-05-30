@@ -201,7 +201,7 @@ class AutoContactDrawer:
         
         # 引入接触判定缓存序列
         recent_forces = []
-        verify_size = 5
+        verify_size = 6
         
         while not rospy.is_shutdown():
             loop_cnt += 1
@@ -215,12 +215,12 @@ class AutoContactDrawer:
                 rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 缓存序列: {[round(f, 2) for f in recent_forces]}")
                 
             if loop_cnt > 60:
-                # 触发条件：连续 5 个采样周期都 >= 12.0 N，或者瞬时力直接突破 19.0 N
-                cond_seq = len(recent_forces) >= verify_size and all(f >= 12.0 for f in recent_forces)
+                # 触发条件：连续 6 个采样周期都 >= 14.0 N，或者瞬时力直接突破 19.0 N
+                cond_seq = len(recent_forces) >= verify_size and all(f >= 14.0 for f in recent_forces)
                 cond_inst = self.current_fz >= 19.0
                 if cond_seq or cond_inst:
                     rospy.loginfo(f"🟢 判定触及纸箱表面！(原因: {'瞬时力触发' if cond_inst else '连续序列触发'})")
-                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 12.0 N)")
+                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 14.0 N)")
                     rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fz:.2f} N")
                     
                     # 发送 10 次 0 速度，确保驱动层刹停
