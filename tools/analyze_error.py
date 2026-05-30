@@ -42,7 +42,8 @@ def analyze_and_plot(actual_csv, theoretical_csv=None):
     ax.set_zlabel('Z (meters)')
     ax.set_title('3D Trajectory Visualization & Error Analysis')
     ax.legend()
-    plt.show()
+    plt.savefig('trajectory_comparison.png', dpi=300, bbox_inches='tight')
+    plt.show() # 恢复为阻塞式显示，这样手动运行时就不会自动退出了
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="分析机械臂轨迹误差")
