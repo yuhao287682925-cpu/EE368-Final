@@ -82,7 +82,7 @@ class AutoContactDrawer:
         
         self.max_step = 0.01          # 单周期最大位移微调量
         self.z_offset = 0.0           # 虚拟 Z 轴力控累积位移 (用于防飞车限位)
-        self.max_z_offset = 0.015     # 最大抬升位移限制 (1.5 cm)
+        self.max_z_offset = 0.008     # 最大抬升位移限制 (0.8 cm，防止悬空)
         self.min_z_offset = -0.03     # 最大下压位移限制 (-3.0 cm)
         
         # 零点力校准状态
