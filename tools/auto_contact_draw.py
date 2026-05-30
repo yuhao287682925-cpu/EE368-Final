@@ -431,10 +431,10 @@ class AutoContactDrawer:
                 # 3. 判定卡阻逻辑 (在绘制阶段且离目标点较远时)
                 if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
                     movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
-                    if movement < 0.0003: # 单周期位移小于 0.3mm (说明可能被卡在纸箱凹陷里)
+                    if movement < 0.00005: # 单周期位移小于 0.05mm (2mm/s，说明可能被卡在纸箱凹陷里)
                         stuck_cnt += 1
                     else:
-                        stuck_cnt = max(0, stuck_cnt - 1)
+                        stuck_cnt = 0 # 一旦恢复运动直接清零
                 else:
                     stuck_cnt = 0
                     
