@@ -268,11 +268,11 @@ class AutoContactDrawer:
             d_error = (force_error - self.prev_force_error) / dt if dt > 0 else 0.0
             self.prev_force_error = force_error
             
-            if force_error < -1.5:
-                # 超过目标力 1.5N 时才允许快速抬升，极力避免因摩擦等干扰导致误判悬空
-                v_z_comp = -(self.kp_up * (force_error + 1.5) + self.kd_up * d_error)
+            if force_error < -1.0:
+                # 超过目标力 1.0N 时才允许快速抬升，极力避免因摩擦等干扰导致误判悬空
+                v_z_comp = -(self.kp_up * (force_error + 1.0) + self.kd_up * d_error)
             elif force_error < 0:
-                # 处于 [目标力, 目标力+1.5N] 的冗余过度按压区间内，不抬升，维持当前高度
+                # 处于 [目标力, 目标力+1.0N] 的冗余过度按压区间内，不抬升，维持当前高度
                 v_z_comp = 0.0
             else:
                 # 压力不足，缓慢下压
@@ -363,7 +363,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 1.2  # 提高刚度至 1.2，适当加快走线速度
+            k_pos = 0.8  # 降低刚度至 0.8，减慢运动速度确保每一个点误差极小
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -386,7 +386,7 @@ class AutoContactDrawer:
                 dz = target_z - self.current_z
                 
                 dist_to_target = math.hypot(dx, dy)
-                if dist_to_target < 0.005: # 到位距离 5mm
+                if dist_to_target < 0.001: # 到位距离 1mm，确保误差极小
                     break
                     
                 # 绘图力滑动窗口维护与平滑
@@ -460,9 +460,9 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度 (提升最高限速至 0.06 m/s，配合 k_pos 增加拖动能力)
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
+                # XY 方向伺服速度 (降低限速至 0.03 m/s，放慢速度)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
                 
                 # 6. Z 方向速度指令根据接触状态机来决定
                 if self.state == FREE_SPACE:
@@ -476,6 +476,11 @@ class AutoContactDrawer:
                 elif self.state == HARD_CONTACT:
                     # 稳定接触下，直接把速度型 PD 力的外环速度发给关节 (限幅限制在 [-0.008, 0.008]m/s)
                     cmd.twist.linear_z = v_z_comp
+                    
+                    # 在上升时停止横向移动
+                    if v_z_comp > 0.0:
+                        cmd.twist.linear_x = 0.0
+                        cmd.twist.linear_y = 0.0
                 
                 # 保持姿态稳定，角速度设为 0
                 cmd.twist.angular_x = 0.0
