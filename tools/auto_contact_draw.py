@@ -408,9 +408,10 @@ class AutoContactDrawer:
                 
                 # 4. PI 动态力控泄压机制 (带完美防积分饱和 Anti-Windup)
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if stuck_cnt > 8:
-                        # 物理卡死时，强行注入巨大正误差，使其极速拔出
-                        force_error = 20.0 
+                    if fz_filtered > 18.0 or stuck_cnt > 8:
+                        # 当绘制过程中的 fz 突破 18N 阈值，或物理卡死时
+                        # 强行注入巨大正误差，触发紧急大幅拔出
+                        force_error = 30.0 
                     else:
                         force_error = fz_filtered - target_force
                         
