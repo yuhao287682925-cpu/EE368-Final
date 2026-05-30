@@ -176,6 +176,8 @@ class SideContactDrawer:
             if rospy.is_shutdown(): break
                 
             k_pos = 1.2
+            k_i = 0.8
+            int_err_x, int_err_y, int_err_z = 0.0, 0.0, 0.0
             stuck_cnt = 0
             prev_pos = np.array([self.current_x, self.current_y, self.current_z])
             
@@ -191,7 +193,9 @@ class SideContactDrawer:
                 err_z = wp['z'] - curr_pos[2]
                 dist_to_target = math.hypot(err_x, err_z)
                 
-                if dist_to_target < 0.005:
+                # 削减切换容差：如果是最后一个点（星星收尾点），容差收紧到 1mm，强制闭合；普通点收紧到 3mm
+                tolerance = 0.001 if i == len(aligned_waypoints) - 1 else 0.003
+                if dist_to_target < tolerance:
                     break
                     
                 draw_force_window.append(self.current_fy)
@@ -228,12 +232,21 @@ class SideContactDrawer:
                 target_y = wp['y'] - depth_offset
                 err_y = target_y - curr_pos[1]
                 
+                # 积分项积累与抗积分饱和 (Anti-windup)
+                int_err_x += err_x * dt
+                int_err_y += err_y * dt
+                int_err_z += err_z * dt
+                
+                int_err_x = np.clip(int_err_x, -0.05, 0.05)
+                int_err_y = np.clip(int_err_y, -0.05, 0.05)
+                int_err_z = np.clip(int_err_z, -0.05, 0.05)
+                
                 cmd = TwistCommand()
                 cmd.reference_frame = 3
                 cmd.duration = 0
-                cmd.twist.linear_x = np.clip(k_pos * err_x, -0.06, 0.06)
-                cmd.twist.linear_y = np.clip(k_pos * err_y, -0.06, 0.06)
-                cmd.twist.linear_z = np.clip(k_pos * err_z, -0.06, 0.06)
+                cmd.twist.linear_x = np.clip(k_pos * err_x + k_i * int_err_x, -0.06, 0.06)
+                cmd.twist.linear_y = np.clip(k_pos * err_y + k_i * int_err_y, -0.06, 0.06)
+                cmd.twist.linear_z = np.clip(k_pos * err_z + k_i * int_err_z, -0.06, 0.06)
                 
                 self.vel_pub.publish(cmd)
                 rate.sleep()
