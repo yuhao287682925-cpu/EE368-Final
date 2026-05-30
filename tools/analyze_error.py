@@ -10,40 +10,58 @@ def analyze_and_plot(actual_csv, theoretical_csv=None):
         print(f"找不到记录文件: {actual_csv}")
         return
 
-    # 读取实际记录的数据
     actual_df = pd.read_csv(actual_csv)
     act_x, act_y, act_z = actual_df['x'].values, actual_df['y'].values, actual_df['z'].values
     
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    fig = plt.figure(figsize=(16, 7))
     
-    # 绘制实际跑出来的物理轨迹 (蓝色实线)
-    ax.plot(act_x, act_y, act_z, label='Actual Trajectory', color='b', linewidth=2)
+    ax1 = fig.add_subplot(121, projection='3d')
+    ax1.plot(act_x, act_y, act_z, label='Actual Trajectory', color='b', linewidth=2)
+    
+    ax2 = fig.add_subplot(122)
     
     if theoretical_csv and os.path.exists(theoretical_csv):
-        # 读取成员A生成的理论轨迹点
         theo_df = pd.read_csv(theoretical_csv)
         theo_x, theo_y, theo_z = theo_df['x'].values, theo_df['y'].values, theo_df['z'].values
         
-        # 绘制理论轨迹 (红色虚线)
-        ax.plot(theo_x, theo_y, theo_z, label='Theoretical Trajectory', color='r', linestyle='--')
+        ax1.plot(theo_x, theo_y, theo_z, label='Theoretical Trajectory', color='r', linestyle='--')
         
-        # 简单均方根误差 (RMSE) 计算
-        # 注意：严格意义上的误差需要使用最近邻(KDTree)或动态时间规整(DTW)对齐。这里展示最基础的点对点近似计算。
         min_len = min(len(act_x), len(theo_x))
         if min_len > 0:
             error = np.sqrt(np.mean((act_x[:min_len] - theo_x[:min_len])**2 + 
                                     (act_y[:min_len] - theo_y[:min_len])**2 + 
                                     (act_z[:min_len] - theo_z[:min_len])**2))
             print(f"平移轨迹均方根误差 (RMSE): {error:.5f} 米")
+            
+        # 自动推断目标平面并绘制 2D 投影
+        std_x = np.std(theo_x)
+        std_y = np.std(theo_y)
+        std_z = np.std(theo_z)
+        
+        stds = [('X', std_x, theo_x, act_x), ('Y', std_y, theo_y, act_y), ('Z', std_z, theo_z, act_z)]
+        # 按照标准差排序，方差最小的轴是平面的法向量
+        stds.sort(key=lambda item: item[1])
+        plane_axes = stds[1:] # 后两个方差大的轴就是目标平面所在的两个轴
+        
+        label1, _, data1_theo, data1_act = plane_axes[0]
+        label2, _, data2_theo, data2_act = plane_axes[1]
+        
+        ax2.plot(data1_act, data2_act, label='Actual 2D Projection', color='b', linewidth=2)
+        ax2.plot(data1_theo, data2_theo, label='Theoretical 2D Projection', color='r', linestyle='--')
+        ax2.set_xlabel(f'{label1} (meters)')
+        ax2.set_ylabel(f'{label2} (meters)')
+        ax2.set_title(f'2D Projection on {label1}-{label2} Plane')
+        ax2.legend()
+        ax2.axis('equal') # 保证图形的横纵比例 1:1，这样画出来的形状才不会失真变形
+        
+    ax1.set_xlabel('X (meters)')
+    ax1.set_ylabel('Y (meters)')
+    ax1.set_zlabel('Z (meters)')
+    ax1.set_title('3D Trajectory Visualization')
+    ax1.legend()
     
-    ax.set_xlabel('X (meters)')
-    ax.set_ylabel('Y (meters)')
-    ax.set_zlabel('Z (meters)')
-    ax.set_title('3D Trajectory Visualization & Error Analysis')
-    ax.legend()
     plt.savefig('trajectory_comparison.png', dpi=300, bbox_inches='tight')
-    plt.show() # 恢复为阻塞式显示，这样手动运行时就不会自动退出了
+    plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="分析机械臂轨迹误差")
