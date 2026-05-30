@@ -363,7 +363,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 1.2  # 提高刚度至 1.2，适当加快走线速度
+            k_pos = 0.8  # 降低刚度至 0.8，减慢运动速度确保每一个点误差极小
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -401,17 +401,17 @@ class AutoContactDrawer:
                 
                 # 4. 单向安全泄压机制 (One-Way Relief Valve)
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if fz_filtered > 10.0 or stuck_cnt > 8:
-                        # 遇到真实异常大阻力(>10N)，或物理卡死，快速向上泄压 (5mm/s)
-                        z_offset_relief += 0.005 * dt
+                    if fz_filtered > 8.0 or stuck_cnt > 8:
+                        # 遇到真实异常大阻力(>8N)，或物理卡死，快速向上泄压 (12mm/s，加强抬升响应)
+                        z_offset_relief += 0.012 * dt
                         if stuck_cnt > 8 and stuck_cnt % 5 == 0:
                             rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
-                    elif fz_filtered < 5.0:
-                        # 阻力恢复安全范围(<5N)，缓慢恢复下压 (2mm/s)
+                    elif fz_filtered < 4.5:
+                        # 阻力恢复安全范围(<4.5N)，缓慢恢复下压 (2mm/s)
                         z_offset_relief -= 0.002 * dt
                         
-                    # 严格限制泄压量：最小为 0 (绝不额外深压)，最大为 15mm (抬升上限)
-                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.015)
+                    # 严格限制泄压量：最小为 0 (绝不额外深压)，最大为 25mm (放宽抬升上限，加强抬升能力)
+                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.025)
                 else:
                     # 提笔移动阶段，泄压量归零
                     z_offset_relief = 0.0
@@ -429,9 +429,9 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度 (提升最高限速至 0.06 m/s)
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
+                # XY 方向伺服速度 (降低限速至 0.03 m/s，放慢走线速度)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
                 
                 # Z 轴以纯位置控制伺服跟随 target_z
                 cmd.twist.linear_z = np.clip(k_pos * dz, -0.03, 0.03)
