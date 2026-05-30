@@ -73,7 +73,7 @@ class AutoContactDrawer:
         self.base_target_force = 6.0  # 标称绘制压力 6.0N
         self.target_force = 6.0       # 动态目标接触力 (可衰减防卡阻)
         self.contact_threshold = 4.0  # 接触与力控激活判定阈值 4.0N
-        self.wrist_torque_threshold = 0.06 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.06 N.m
+        self.wrist_torque_threshold = 0.8  # 末端关节 (第 6 关节) 扭矩接触跳变阈值由0.06提高至0.8 N.m
         
         self.kp_up = 0.005            # 过度按压抬升增益 (快速向上抬)
         self.kd_up = 0.001
@@ -181,7 +181,7 @@ class AutoContactDrawer:
         动作 1：全自动下探寻面。
         采用“两阶段自适应寻面与原位高精度去皮校准”：
         - 阶段 1：在 Ready 状态校准，随后以 10mm/s 速度向下进行粗探寻面（瞬时 17N，连续 5 周期 15N 判定接触）。
-        - 阶段 2：刹停后上抬 15mm 悬空，静止 1.5 秒，重新执行高精度原位去皮校零，消除姿态改变带来的重力偏置失效。
+        - 阶段 2：刹停后上抬 5mm 悬空，静止 1.5 秒，重新执行高精度原位去皮校零，消除姿态改变带来的重力偏置失效。
         - 阶段 3：以极慢速度 3mm/s 向下精细探测贴合（连续 5 周期 5N 判定接触），精确定位最终对刀原点。
         """
         rospy.loginfo("🚀 开始自动下探寻面程序 (两阶段原位去皮重构版)...")
@@ -253,11 +253,11 @@ class AutoContactDrawer:
         rospy.loginfo(f"📍 粗探测接触位置 Z: {z_rough:.4f} m")
         
         # --- 阶段 2：原位回抬悬空与高精度校零 ---
-        rospy.loginfo("⬆️ [阶段2-原位抬升] 正在向上垂直回抬 15mm 悬空...")
+        rospy.loginfo("⬆️ [阶段2-原位抬升] 正在向上垂直回抬 5mm 悬空...")
         lift_calib_cmd = TwistCommand()
         lift_calib_cmd.reference_frame = 3
         lift_calib_cmd.twist.linear_z = 0.010 # 10mm/s
-        target_calib_z = z_rough + 0.015
+        target_calib_z = z_rough + 0.005
         
         start_lift_time = rospy.get_time()
         while not rospy.is_shutdown():
