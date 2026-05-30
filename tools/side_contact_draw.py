@@ -22,7 +22,6 @@ class SideContactDrawer:
     def __init__(self):
         rospy.init_node('side_contact_draw', anonymous=True)
         
-        # 初始化 Gen3-lite DH 模型
         dh_params_list = np.array([[0, 0, 243.3/1000, 0],
                                    [math.pi/2, 0, 10/1000, 0+math.pi/2],
                                    [math.pi, 280/1000, 0, 0+math.pi/2],
@@ -31,22 +30,18 @@ class SideContactDrawer:
                                    [-math.pi/2, 0, 235/1000, 0-math.pi/2]])
         self.arm_model = NLinkArm(dh_params_list)
         
-        # 实时坐标
         self.current_x = 0.0
         self.current_y = 0.0
         self.current_z = 0.0
         
-        # 侧面受力 (Fx) 的零点校准
-        self.fx_bias = 0.0
+        self.fy_bias = 0.0
         self.calibration_samples = []
         self.calibrated = False
-        self.current_fx = 0.0
+        self.current_fy = 0.0
         
         rospy.Subscriber("/my_gen3_lite/joint_states", JointState, self.joint_states_callback)
         self.vel_pub = rospy.Publisher("/my_gen3_lite/in/cartesian_velocity", TwistCommand, queue_size=1)
         self.force_pub = rospy.Publisher("/force_control/auto/estimated_f_normal", StdFloat64, queue_size=1)
-        
-
 
     def joint_states_callback(self, msg):
         thetas = msg.position[0:6]
@@ -62,25 +57,24 @@ class SideContactDrawer:
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
         
-        # 侧面碰撞主要看 X 轴方向的力
-        raw_fx = tool_force[0]
+        # 面向 -Y 寻面，主要受力轴为 Y
+        raw_fy = tool_force[1]
         
         if not self.calibrated:
-            self.calibration_samples.append(raw_fx)
+            self.calibration_samples.append(raw_fy)
             if len(self.calibration_samples) >= 40:
-                self.fx_bias = np.mean(self.calibration_samples)
+                self.fy_bias = np.mean(self.calibration_samples)
                 self.calibrated = True
-                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (X Bias): {self.fx_bias:.2f} N")
+                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Y Bias): {self.fy_bias:.2f} N")
             return
             
-        # 机械臂向前推进，受到纸板反作用力，取绝对值作为正压力
-        self.current_fx = abs(raw_fx - self.fx_bias)
-        self.force_pub.publish(StdFloat64(self.current_fx))
+        # -Y 方向推进，取绝对值作为阻力
+        self.current_fy = abs(raw_fy - self.fy_bias)
+        self.force_pub.publish(StdFloat64(self.current_fy))
 
     def run_auto_touchdown(self):
-        rospy.loginfo("🚀 开始沿 X 轴正向直线寻面...")
+        rospy.loginfo("🚀 开始沿 -Y 轴直线寻面...")
         
-        # 重新去皮
         self.calibrated = False
         self.calibration_samples = []
         rospy.sleep(1.5)
@@ -90,9 +84,9 @@ class SideContactDrawer:
         rate = rospy.Rate(40)
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 3
-        # X 轴前移 15mm/s 探测表面
-        down_cmd.twist.linear_x = 0.015 
-        down_cmd.twist.linear_y = 0.0
+        # -Y 轴前移探测
+        down_cmd.twist.linear_x = 0.0 
+        down_cmd.twist.linear_y = -0.015
         down_cmd.twist.linear_z = 0.0
         
         stop_cmd = TwistCommand()
@@ -105,13 +99,13 @@ class SideContactDrawer:
         
         while not rospy.is_shutdown():
             loop_cnt += 1
-            recent_forces.append(self.current_fx)
+            recent_forces.append(self.current_fy)
             if len(recent_forces) > verify_size:
                 recent_forces.pop(0)
                 
             if loop_cnt > 60:
                 if len(recent_forces) >= verify_size and all(f >= 12.0 for f in recent_forces):
-                    rospy.loginfo(f"🟢 判定触及纸箱侧表面！X 轴接触力: {self.current_fx:.2f} N")
+                    rospy.loginfo(f"🟢 判定触及纸箱表面！Y 轴接触力: {self.current_fy:.2f} N")
                     for _ in range(10):
                         self.vel_pub.publish(stop_cmd)
                         rospy.sleep(0.005)
@@ -143,10 +137,8 @@ class SideContactDrawer:
         
         if not raw_waypoints: return
             
-        # 1. X 轴前移寻面
         contact_x, contact_y, contact_z = self.run_auto_touchdown()
         
-        # 3. YZ 坐标转换 (将 2D 轨迹硬编码映射到机器人的正前方立面上)
         first_draw_idx = 0
         for idx, wp in enumerate(raw_waypoints):
             if wp['phase'] in ['draw', 'touch_down']:
@@ -161,20 +153,19 @@ class SideContactDrawer:
             du = wp['x'] - u_ref
             dv = wp['y'] - v_ref
             
-            # X 控制深度
-            # 机器人 Y 轴朝左。我们希望轨迹 x 增大时往右画，所以减去 du。
-            # 机器人 Z 轴朝上。我们希望轨迹 y 增大时往上画，所以加上 dv。
+            # Y 控制深度 (往 -Y 压入)。
+            # X 控制左右：面向 -Y 时，右边是 -X 轴。如果轨迹右边增加(x增大)，X轴要减小。
+            # Z 控制上下：Z 轴朝上。y 增大时，Z增加。
             aligned_waypoints.append({
-                'x': contact_x,
-                'y': contact_y - du, 
+                'x': contact_x - du,
+                'y': contact_y, 
                 'z': contact_z + dv, 
                 'phase': wp['phase']
             })
             
-        # 4. 高频位置伺服控制
         rate = rospy.Rate(40)
         dt = 0.025
-        x_offset_relief = 0.0
+        y_offset_relief = 0.0
         draw_force_window = []
         
         for i, wp in enumerate(aligned_waypoints):
@@ -187,17 +178,17 @@ class SideContactDrawer:
             while not rospy.is_shutdown():
                 curr_pos = np.array([self.current_x, self.current_y, self.current_z])
                 
-                # YZ 平面的位移误差
-                err_y = wp['y'] - curr_pos[1]
+                # XZ 平面的位移误差
+                err_x = wp['x'] - curr_pos[0]
                 err_z = wp['z'] - curr_pos[2]
-                dist_to_target = math.hypot(err_y, err_z)
+                dist_to_target = math.hypot(err_x, err_z)
                 
                 if dist_to_target < 0.005:
                     break
                     
-                draw_force_window.append(self.current_fx)
+                draw_force_window.append(self.current_fy)
                 if len(draw_force_window) > 4: draw_force_window.pop(0)
-                fx_filtered = np.mean(draw_force_window)
+                fy_filtered = np.mean(draw_force_window)
                 
                 if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.01:
                     if np.linalg.norm(curr_pos - prev_pos) < 0.0001:
@@ -208,23 +199,23 @@ class SideContactDrawer:
                     stuck_cnt = 0
                 prev_pos = curr_pos
                 
-                # 安全泄压：如果在 X 轴上遇到大阻力，往后退缩
+                # 安全泄压：如果在 -Y 轴上遇到大阻力，往 +Y 退缩
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if fx_filtered > 10.0 or stuck_cnt > 8:
-                        x_offset_relief += 0.005 * dt
-                    elif fx_filtered < 5.0:
-                        x_offset_relief -= 0.002 * dt
-                    x_offset_relief = np.clip(x_offset_relief, 0.0, 0.015)
+                    if fy_filtered > 10.0 or stuck_cnt > 8:
+                        y_offset_relief += 0.005 * dt
+                    elif fy_filtered < 5.0:
+                        y_offset_relief -= 0.002 * dt
+                    y_offset_relief = np.clip(y_offset_relief, 0.0, 0.015)
                 else:
-                    x_offset_relief = 0.0
+                    y_offset_relief = 0.0
                     
-                # 固定深度：向 +X 压入 3mm
+                # 固定深度：向 -Y 压入 3mm
                 fixed_depth = 0.003
-                depth_offset = fixed_depth - x_offset_relief if wp['phase'] in ['draw', 'touch_down'] else 0.0
+                depth_offset = fixed_depth - y_offset_relief if wp['phase'] in ['draw', 'touch_down'] else 0.0
                 
-                # 目标 X 为接触面加上定深偏移
-                target_x = wp['x'] + depth_offset
-                err_x = target_x - curr_pos[0]
+                # 目标 Y 为接触面往里压 (- depth_offset)
+                target_y = wp['y'] - depth_offset
+                err_y = target_y - curr_pos[1]
                 
                 cmd = TwistCommand()
                 cmd.reference_frame = 3
@@ -236,14 +227,14 @@ class SideContactDrawer:
                 self.vel_pub.publish(cmd)
                 rate.sleep()
                 
-            rospy.loginfo(f"进度: {i+1}/{len(aligned_waypoints)} | X轴向力: {self.current_fx:.2f}N | X退缩: {x_offset_relief:.4f}m")
+            rospy.loginfo(f"进度: {i+1}/{len(aligned_waypoints)} | Y轴向力: {self.current_fy:.2f}N | Y退缩: {y_offset_relief:.4f}m")
             
-        rospy.loginfo("🛑 绘制到达终点，沿 X 轴向后拔出...")
+        rospy.loginfo("🛑 绘制到达终点，沿 +Y 轴向外拔出...")
         lift_cmd = TwistCommand()
         lift_cmd.reference_frame = 3
-        # X 轴后退拔出 3cm
-        lift_cmd.twist.linear_x = -0.03
-        lift_cmd.twist.linear_y = 0.0
+        # Y 轴后退拔出 3cm (往 +Y)
+        lift_cmd.twist.linear_x = 0.0
+        lift_cmd.twist.linear_y = 0.03
         lift_cmd.twist.linear_z = 0.0
         
         for _ in range(40):
@@ -257,7 +248,7 @@ class SideContactDrawer:
             self.vel_pub.publish(stop_cmd)
             rospy.sleep(0.01)
             
-        rospy.loginfo("🎉 X 轴纯净版侧面绘制任务圆满完成！")
+        rospy.loginfo("🎉 -Y 轴侧面绘制任务圆满完成！")
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:

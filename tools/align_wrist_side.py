@@ -62,12 +62,12 @@ class WristAlignerSide:
         stable_count = 0     
         align_success = False
         
-        rospy.loginfo("🔄 开始自适应侧面对齐 (释放位置约束，仅对齐笔尖至 +X 轴，允许自然偏移)...")
+        rospy.loginfo("🔄 开始自适应侧面对齐 (仅对齐笔尖至 -Y 轴，允许自然偏移)...")
         
         while not rospy.is_shutdown():
             # 1. 纯指向误差计算 (对应 θY 任意)
             v_curr = self.R_curr[:, 2] # 当前工具 Z 轴 (笔尖指向)
-            v_target = np.array([1.0, 0.0, 0.0]) # 目标指向正前方 +X 轴
+            v_target = np.array([0.0, -1.0, 0.0]) # 目标指向 -Y 轴
             
             dot = np.clip(np.dot(v_curr, v_target), -1.0, 1.0)
             angle = math.acos(dot)
@@ -82,24 +82,19 @@ class WristAlignerSide:
                 stable_count = 0
                 axis = np.cross(v_curr, v_target)
                 if np.linalg.norm(axis) < 1e-5:
-                    axis = np.array([0.0, 1.0, 0.0])
+                    axis = np.array([1.0, 0.0, 0.0]) # 若刚好反向，换个正交轴
                 else:
                     axis = axis / np.linalg.norm(axis)
                     
                 omega_cmd = k_rot * angle * axis
                 omega_cmd = np.clip(omega_cmd, -max_ang_vel, max_ang_vel)
                 
-            # 2. 位置释放控制核心算法 (避免卡死)
-            # 通过提取角速度雅可比，计算最小关节速度，并前馈线速度，让位置自然偏移
+            # 2. 位置释放控制核心算法
             J = self.arm_model.basic_jacobian(self.thetas)
-            # 假设标准雅可比: 0:3 为线速度, 3:6 为角速度
             J_linear = J[0:3, :]
             J_angular = J[3:6, :]
             
-            # 使用伪逆计算实现该角速度所需的最小关节角速度
             q_dot = np.linalg.pinv(J_angular).dot(omega_cmd)
-            
-            # 伴随产生的自然位置偏移速度
             v_linear = J_linear.dot(q_dot)
             
             # 3. 发布 TwistCommand
@@ -107,13 +102,11 @@ class WristAlignerSide:
             cmd.reference_frame = 3 # 基座坐标系
             cmd.duration = 0
             
-            # 允许线速度跟随关节运动自然释放，而不是强行锁定在 0 (强行锁定 0 极易导致运动学奇异/卡死)
             if np.linalg.norm(omega_cmd) < 1e-4:
                 cmd.twist.linear_x = 0.0
                 cmd.twist.linear_y = 0.0
                 cmd.twist.linear_z = 0.0
             else:
-                # 给一定的阻尼系数，防止偏移过快，0.8 经验值
                 cmd.twist.linear_x = 0.8 * v_linear[0]
                 cmd.twist.linear_y = 0.8 * v_linear[1]
                 cmd.twist.linear_z = 0.8 * v_linear[2]
@@ -125,7 +118,6 @@ class WristAlignerSide:
             self.vel_pub.publish(cmd)
             rate.sleep()
             
-        # 发送零速度指令锁定机械臂
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
         for _ in range(15):
@@ -133,8 +125,8 @@ class WristAlignerSide:
             rospy.sleep(0.005)
             
         if align_success:
-            rospy.loginfo("✅ 侧面姿态自动调直成功！笔尖现已直指 +X 轴 (正前方)！")
-            rospy.loginfo("👉 提示：虽然位置发生了微小偏移，但没关系，现在请将笔尖平移到纸板起点，然后运行 side_contact_draw.py 开始作画！")
+            rospy.loginfo("✅ 侧面姿态自动调直成功！笔尖现已直指 -Y 轴！")
+            rospy.loginfo("👉 提示：现在请将笔尖平移到纸板起点，然后运行 side_contact_draw.py 开始作画！")
         else:
             rospy.logerr("❌ 姿态调直超时或异常终止。")
 
