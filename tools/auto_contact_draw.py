@@ -429,6 +429,7 @@ class AutoContactDrawer:
             # 提取基准漂移力
             baseline_fz = air_fz_profile[i] if i < len(air_fz_profile) else air_fz_profile[-1]
             fz_pure = 0.0
+            fz_filtered = self.current_fz
             
             while not rospy.is_shutdown():
                 dx = target_x - self.current_x
