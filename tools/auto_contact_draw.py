@@ -274,19 +274,14 @@ class AutoContactDrawer:
             # 3. 稳定接触状态下，执行非对称 PD 控制
             force_error = self.target_force - fz_val
             
-            # 【水平力矩抬升判定】
-            # 在水平方向遇到阻力（如陷入纸箱凹陷）时，比竖直方向更容易在腕部产生力矩
-            # 若检测到力矩异常突变，强行注入巨大负向误差，骗过控制器立刻触发最大速度抬升
-            if self.wrist_torque > self.wrist_torque_threshold:
-                rospy.logwarn_throttle(0.5, f"⚠️ 腕部力矩突变 ({self.wrist_torque:.3f} N.m)，触发紧急抬升！")
-                force_error = -10.0
+            # 【水平力矩抬升判定 (已根据要求完全禁用)】
+            # 不再使用手腕扭矩干预控制，仅依靠 Z 轴纯压力 (Fz)
             d_error = (force_error - self.prev_force_error) / dt if dt > 0 else 0.0
             self.prev_force_error = force_error
             
             if force_error < -1.0:
                 # 超过目标力 1.0N 时才允许快速抬升，极力避免因摩擦等干扰导致误判悬空
-                if force_error != -10.0:
-                    rospy.loginfo_throttle(0.5, f"⬆️ 接触压力过大 (Fz={fz_val:.2f}N > 目标{self.target_force:.1f}N)，执行常规抬升")
+                rospy.loginfo_throttle(0.5, f"⬆️ 接触压力过大 (Fz={fz_val:.2f}N > 目标{self.target_force:.1f}N)，执行常规抬升")
                 v_z_comp = -(self.kp_up * (force_error + 1.0) + self.kd_up * d_error)
             elif force_error < 0:
                 # 处于 [目标力, 目标力+1.0N] 的冗余过度按压区间内，不抬升，维持当前高度
