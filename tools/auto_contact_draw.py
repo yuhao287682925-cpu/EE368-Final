@@ -387,9 +387,9 @@ class AutoContactDrawer:
                 fz_filtered = np.mean(draw_force_window) if len(draw_force_window) >= draw_window_size else self.current_fz
                 
                 # 3. 判定物理卡阻 (在绘制阶段且离目标点较远时)
-                if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
+                if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.01: # 只有距离目标大于10mm时才检测卡阻，避免接近目标自然减速时误判
                     movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
-                    if movement < 0.0003: # 单周期 XY 位移小于 0.3mm (说明拖不动了，被卡死)
+                    if movement < 0.0001: # 单周期 XY 位移极小 (<0.1mm，即实际速度<4mm/s，说明真卡死了)
                         stuck_cnt += 1
                     else:
                         stuck_cnt = max(0, stuck_cnt - 1)
@@ -401,13 +401,13 @@ class AutoContactDrawer:
                 
                 # 4. 单向安全泄压机制 (One-Way Relief Valve)
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if fz_filtered > 6.0 or stuck_cnt > 5:
-                        # 遇到异常大阻力，或物理卡死，快速向上泄压 (5mm/s)
+                    if fz_filtered > 10.0 or stuck_cnt > 8:
+                        # 遇到真实异常大阻力(>10N)，或物理卡死，快速向上泄压 (5mm/s)
                         z_offset_relief += 0.005 * dt
-                        if stuck_cnt > 5 and stuck_cnt % 5 == 0:
+                        if stuck_cnt > 8 and stuck_cnt % 5 == 0:
                             rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
-                    elif fz_filtered < 3.0:
-                        # 阻力恢复安全范围，缓慢恢复下压 (2mm/s)
+                    elif fz_filtered < 5.0:
+                        # 阻力恢复安全范围(<5N)，缓慢恢复下压 (2mm/s)
                         z_offset_relief -= 0.002 * dt
                         
                     # 严格限制泄压量：最小为 0 (绝不额外深压)，最大为 15mm (抬升上限)
