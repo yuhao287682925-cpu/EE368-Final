@@ -63,7 +63,7 @@ class AutoContactDrawer:
         # 核心力控参数：13N 目标压力，直接阈值激活门槛 1.0N
         self.desired_force = 13.0
         self.activation_force_threshold = 1.0
-        self.wrist_torque_threshold = 0.8  # 手腕力矩避障阈值 0.8 N.m
+        self.wrist_torque_threshold = 1.5  # 手腕力矩避障阈值调高至 1.5 N.m，防止正常运动误触发
         
         # 非对称 PD 增益：抬起快，下压慢
         self.kp_up = 0.005
