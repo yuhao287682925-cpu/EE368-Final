@@ -139,14 +139,19 @@ class SideContactDrawer:
             
         contact_x, contact_y, contact_z = self.run_auto_touchdown()
         
-        first_draw_idx = 0
-        for idx, wp in enumerate(raw_waypoints):
-            if wp['phase'] in ['draw', 'touch_down']:
-                first_draw_idx = idx
-                break
-                
-        u_ref = raw_waypoints[first_draw_idx]['x']
-        v_ref = raw_waypoints[first_draw_idx]['y']
+        # 让寻面的接触点成为整个轨迹的“正下方最低点”
+        draw_wps = [wp for wp in raw_waypoints if wp['phase'] in ['draw', 'touch_down']]
+        if not draw_wps:
+            draw_wps = raw_waypoints
+            
+        min_y = min(wp['y'] for wp in draw_wps)
+        max_x = max(wp['x'] for wp in draw_wps)
+        min_x = min(wp['x'] for wp in draw_wps)
+        
+        # u_ref 取轨迹的横向中心，保证画作左右居中在接触点上方
+        u_ref = (max_x + min_x) / 2.0
+        # v_ref 取轨迹的最低点，保证 dv 始终 >= 0，即 Z 始终大于接触点高度
+        v_ref = min_y
         
         aligned_waypoints = []
         for wp in raw_waypoints:
@@ -211,7 +216,12 @@ class SideContactDrawer:
                     
                 # 固定深度：向 -Y 压入 3mm
                 fixed_depth = 0.003
-                depth_offset = fixed_depth - y_offset_relief if wp['phase'] in ['draw', 'touch_down'] else 0.0
+                if wp['phase'] in ['draw', 'touch_down']:
+                    depth_offset = fixed_depth - y_offset_relief
+                else:
+                    depth_offset = -0.015 # hover阶段，往 +Y 方向拔出 15mm 避免刮擦
+                
+                # 目标 Y 为接触面减去定深偏移 (往 -Y 压，所以减去正数)
                 
                 # 目标 Y 为接触面往里压 (- depth_offset)
                 target_y = wp['y'] - depth_offset
