@@ -384,7 +384,7 @@ class AutoContactDrawer:
                 dy = target_y - self.current_y
                 dist_to_target = math.hypot(dx, dy)
                 
-                if dist_to_target < 0.005: # 到位距离 5mm
+                if dist_to_target < 0.001: # 极严格的到位距离 (1mm)，确保每一个点必须物理走到位才会切下一个点
                     break
                     
                 # 2. 绘图力滑动窗口维护与平滑
@@ -419,9 +419,10 @@ class AutoContactDrawer:
                     unclamped_z = p_term + ki_force * (force_integral + force_error * dt)
                     
                     # 带有反向计算 (Back-Calculation) 的严格限位，保证响应零延迟
-                    if unclamped_z > 0.015:
-                        z_offset_relief = 0.015
-                        force_integral = (0.015 - p_term) / ki_force
+                    # 限位上限收紧至 10mm (0.010) 避免悬空过高
+                    if unclamped_z > 0.010:
+                        z_offset_relief = 0.010
+                        force_integral = (0.010 - p_term) / ki_force
                     elif unclamped_z < 0.0:
                         z_offset_relief = 0.0
                         force_integral = (0.0 - p_term) / ki_force
