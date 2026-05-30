@@ -461,7 +461,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 0.8  # 降低刚度至 0.8，减慢运动速度确保每一个点误差极小
+            k_pos = 1.5  # 刚度系数设为 1.5，加快轨迹运动响应速度
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -558,9 +558,9 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度 (降低限速至 0.03 m/s，放慢速度)
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
+                # XY 方向伺服速度 (限速放宽至 0.06 m/s 以加快绘制速度)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
                 
                 # 6. Z 方向速度指令根据接触状态机来决定
                 if self.state == FREE_SPACE:
