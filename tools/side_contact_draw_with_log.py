@@ -64,17 +64,17 @@ class SideContactDrawer:
             if len(self.calibration_samples) >= 40:
                 self.f3d_bias = np.mean(self.calibration_samples, axis=0)
                 self.calibrated = True
-                rospy.loginfo(f"鉁?浼犳劅鍣ㄩ浂鐐规牎鍑嗗畬鎴愶紒娑堥櫎 3D 闈欏姏鍋忕疆: [{self.f3d_bias[0]:.2f}, {self.f3d_bias[1]:.2f}, {self.f3d_bias[2]:.2f}] N")
+                rospy.loginfo(f"✅ 传感器零点校准完成！消除 3D 静力偏置: [{self.f3d_bias[0]:.2f}, {self.f3d_bias[1]:.2f}, {self.f3d_bias[2]:.2f}] N")
             return
             
         f_net = raw_f3d - self.f3d_bias
         
-        # 澶氭柟鍚戝悎鍔?(鍖呭惈鍨傜洿鍘嬪姏鍜屽钩闈笂鐨勬í鍚?绾靛悜鎽╂摝闃诲姏)
+        # 多方向合力 (包含垂直压力和平面上的横向/纵向摩擦阻力)
         self.current_f_total = np.linalg.norm(f_net)
         self.force_pub.publish(StdFloat64(self.current_f_total))
 
     def run_auto_touchdown(self):
-        rospy.loginfo("馃殌 寮€濮嬫部 -Y 杞寸洿绾垮闈?..")
+        rospy.loginfo("🚀 开始沿 -Y 轴直线寻面...")
         
         self.calibrated = False
         self.calibration_samples = []
@@ -85,7 +85,8 @@ class SideContactDrawer:
         rate = rospy.Rate(40)
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 3
-        # -Y 杞村墠绉绘帰娴?        down_cmd.twist.linear_x = 0.0 
+        # -Y 轴前移探测
+        down_cmd.twist.linear_x = 0.0 
         down_cmd.twist.linear_y = -0.015
         down_cmd.twist.linear_z = 0.0
         
@@ -105,7 +106,7 @@ class SideContactDrawer:
                 
             if loop_cnt > 60:
                 if len(recent_forces) >= verify_size and all(f >= 12.0 for f in recent_forces):
-                    rospy.loginfo(f"馃煝 鍒ゅ畾瑙﹀強绾哥琛ㄩ潰锛佹帴瑙﹀悎鍔? {self.current_f_total:.2f} N")
+                    rospy.loginfo(f"🟢 判定触及纸箱表面！接触合力: {self.current_f_total:.2f} N")
                     for _ in range(10):
                         self.vel_pub.publish(stop_cmd)
                         rospy.sleep(0.005)
@@ -117,13 +118,13 @@ class SideContactDrawer:
             
         if contact_detected:
             rospy.sleep(0.5)
-            rospy.loginfo(f"馃搷 瀵婚潰璧风偣閿佸畾: X={self.current_x:.4f}, Y={self.current_y:.4f}, Z={self.current_z:.4f}")
+            rospy.loginfo(f"📍 寻面起点锁定: X={self.current_x:.4f}, Y={self.current_y:.4f}, Z={self.current_z:.4f}")
             return self.current_x, self.current_y, self.current_z
         else:
-            raise RuntimeError("瀵婚潰绋嬪簭寮傚父缁堟")
+            raise RuntimeError("寻面程序异常终止")
 
     def execute_and_draw(self, csv_file):
-        rospy.loginfo(f"璇诲彇 2D 杞ㄨ抗鏂囦欢: {csv_file}")
+        rospy.loginfo(f"读取 2D 轨迹文件: {csv_file}")
         raw_waypoints = []
         with open(csv_file, 'r') as f:
             reader = csv.DictReader(f)
@@ -145,7 +146,8 @@ class SideContactDrawer:
                 first_draw_idx = idx
                 break
                 
-        # 鎭㈠榛樿鏄犲皠锛氫綘鎵庝笅鍘荤殑鈥滄帴瑙︾偣鈥濓紝灏辨槸杞ㄨ抗鐨勭涓€绗旇捣绗旂偣锛?        u_ref = raw_waypoints[first_draw_idx]['x']
+        # 恢复默认映射：你扎下去的“接触点”，就是轨迹的第一笔起笔点！
+        u_ref = raw_waypoints[first_draw_idx]['x']
         v_ref = raw_waypoints[first_draw_idx]['y']
         
         aligned_waypoints = []
@@ -153,7 +155,11 @@ class SideContactDrawer:
             du = wp['x'] - u_ref
             dv = wp['y'] - v_ref
             
-            # Y 鎺у埗娣卞害 (寰€ -Y 鍘嬪叆)銆?            # X 鎺у埗宸﹀彸锛氶潰鍚?-Y 鏃讹紝鍙宠竟鏄?-X 杞淬€傝建杩?x 澧炲ぇ鏃讹紝X鍑忓皬銆?            # Z 鎺у埗涓婁笅锛氬師杞ㄨ抗鏄熸槦鏄粠涓婂線涓嬬敾锛坹鍑忓皬, dv涓鸿礋锛夈€?            # 涓轰簡瀹炵幇鈥滄墡涓嬪幓灏卞線涓婄敾鈥濓紝鎴戜滑鍙嶈浆 Z 杞存槧灏勶紙鍑忓幓 dv锛夈€?            # 杩欎細鎶婂浘褰笂涓嬮鍊掞紝浣嗗畬缇庢弧瓒充簡浠庝笅寰€涓婄敾鐨勭墿鐞嗛渶姹傦紒
+            # Y 控制深度 (往 -Y 压入)。
+            # X 控制左右：面向 -Y 时，右边是 -X 轴。轨迹 x 增大时，X减小。
+            # Z 控制上下：原轨迹星星是从上往下画（y减小, dv为负）。
+            # 为了实现“扎下去就往上画”，我们反转 Z 轴映射（减去 dv）。
+            # 这会把图形上下颠倒，但完美满足了从下往上画的物理需求！
             aligned_waypoints.append({
                 'x': contact_x - du,
                 'y': contact_y, 
@@ -181,7 +187,8 @@ class SideContactDrawer:
                 if wp['phase'] in ['draw', 'touch_down']:
                     actual_log.append({'x': curr_pos[0], 'y': curr_pos[1], 'z': curr_pos[2]})
                 
-                # XZ 骞抽潰鐨勪綅绉昏宸?                err_x = wp['x'] - curr_pos[0]
+                # XZ 平面的位移误差
+                err_x = wp['x'] - curr_pos[0]
                 err_z = wp['z'] - curr_pos[2]
                 dist_to_target = math.hypot(err_x, err_z)
                 
@@ -201,21 +208,24 @@ class SideContactDrawer:
                     stuck_cnt = 0
                 prev_pos = curr_pos
                 
-                # 瀹夊叏娉勫帇锛氬鏋?3D 鍚堝姏閬囧埌澶ч樆鍔涜€屾崯锛?                if wp['phase'] in ['draw', 'touch_down']:
+                # 安全泄压：如果 3D 合力遇到大阻力（由于摩擦力或戳太深），更快速地往 +Y 退缩
+                if wp['phase'] in ['draw', 'touch_down']:
                     if f_filtered > 10.0 or stuck_cnt > 8:
-                        y_offset_relief += 0.015 * dt 
+                        y_offset_relief += 0.015 * dt # 泄压速度加快三倍 (15mm/s)
                     elif f_filtered < 5.0:
-                        y_offset_relief -= 0.005 * dt 
+                        y_offset_relief -= 0.005 * dt # 恢复速度也相应加快
                     y_offset_relief = np.clip(y_offset_relief, 0.0, 0.015)
                 else:
                     y_offset_relief = 0.0
                     
+                # 固定深度：向 -Y 压入 3mm
                 fixed_depth = 0.003
                 if wp['phase'] in ['draw', 'touch_down']:
                     depth_offset = fixed_depth - y_offset_relief
                 else:
-                    depth_offset = -0.015 
+                    depth_offset = -0.015 # hover阶段，往 +Y 方向拔出 15mm 避免刮擦
                 
+                # 目标 Y 为接触面往里压 (- depth_offset)
                 target_y = wp['y'] - depth_offset
                 err_y = target_y - curr_pos[1]
                 
@@ -229,11 +239,12 @@ class SideContactDrawer:
                 self.vel_pub.publish(cmd)
                 rate.sleep()
                 
-            rospy.loginfo(f"杩涘害: {i+1}/{len(aligned_waypoints)} | 3D鍚堝姏: {self.current_f_total:.2f}N | Y閫€缂? {y_offset_relief:.4f}m")
+            rospy.loginfo(f"进度: {i+1}/{len(aligned_waypoints)} | 3D合力: {self.current_f_total:.2f}N | Y退缩: {y_offset_relief:.4f}m")
             
-        rospy.loginfo("馃洃 缁樺埗鍒拌揪缁堢偣锛屾部 +Y 杞村悜澶栨嫈鍑?..")
+        rospy.loginfo("🛑 绘制到达终点，沿 +Y 轴向外拔出...")
         lift_cmd = TwistCommand()
         lift_cmd.reference_frame = 3
+        # Y 轴后退拔出 3cm (往 +Y)
         lift_cmd.twist.linear_x = 0.0
         lift_cmd.twist.linear_y = 0.03
         lift_cmd.twist.linear_z = 0.0
@@ -277,7 +288,7 @@ class SideContactDrawer:
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print("鐢ㄦ硶: python3 side_contact_draw.py <path_to_2d_csv>")
+        print("用法: python3 side_contact_draw_with_log.py <path_to_2d_csv>")
         sys.exit(1)
         
     try:
