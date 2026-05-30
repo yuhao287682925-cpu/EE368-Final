@@ -301,6 +301,37 @@ class AutoContactDrawer:
         
         return self.z_offset, v_z_comp
 
+
+    def update_3d_force_control(self, f_z, f_total, stuck_cnt, dt):
+        """
+        基于 v1_backup 的状态机 PD 阻抗控制，结合 3D 合力与卡死检测。
+        """
+        # 当发生卡死或横向撞击时，产生巨大正误差以触发快速拔出
+        if stuck_cnt > 5 or f_total > 25.0:
+            self.error = 15.0
+        else:
+            self.error = f_z - self.target_force
+            
+        d_error = (self.error - self.prev_error) / dt
+        self.prev_error = self.error
+        
+        if self.state == FREE_SPACE:
+            # 悬空状态下，缓慢恢复至 0 偏置，防止突然下坠
+            self.z_offset *= 0.98 
+        elif self.state == SOFT_CONTACT:
+            # 弱接触状态下，仅使用极小比例 P 控制，平滑过渡
+            delta_z = 0.00005 * self.error
+            self.z_offset -= delta_z
+        elif self.state == HARD_CONTACT:
+            # 强接触状态下，启用完整 PD 控制，提供更强力的顺应
+            p_term = 0.00015 * self.error
+            d_term = 0.00002 * d_error
+            delta_z = p_term + d_term
+            self.z_offset -= delta_z
+            
+        # 安全限幅：绝对不允许把笔尖往下压超过默认深度的 2mm；最多允许抬起 15mm 泄压
+        self.z_offset = max(-0.002, min(self.z_offset, 0.015))
+
     def execute_and_draw(self, csv_file):
         """
         自动寻面对刀对齐，随后高频速度伺服绘制
@@ -415,35 +446,53 @@ class AutoContactDrawer:
                 prev_servo_x = self.current_x
                 prev_servo_y = self.current_y
                 
-                # 4. 单向安全泄压机制 (One-Way Relief Valve) - 混合解耦版本
+                # 4. 接触状态机跳转逻辑 (引入 v1_backup 动态目标调整)
                 if wp['phase'] in ['draw', 'touch_down']:
-                    # 【最高优先级：避险抬升】
-                    if fz_filtered > 12.0 or f_filtered > 25.0 or stuck_cnt > 5:
-                        z_offset_relief += 0.015 * dt  # 极速抬升 (15mm/s)
-                        if stuck_cnt > 5 and stuck_cnt % 5 == 0:
-                            rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发极速抬笔泄压！")
+                    if self.state == FREE_SPACE:
+                        if fz_filtered > 3.5:
+                            self.state_counter += 1
+                            if self.state_counter >= 6:
+                                self.state = SOFT_CONTACT
+                                self.state_counter = 0
+                                rospy.loginfo(f"🟠 状态转移: FREE_SPACE -> SOFT_CONTACT (Fz={fz_filtered:.2f}N)")
+                        else:
+                            self.state_counter = 0
                             
-                    # 【第二优先级：恢复下压】(两段式恢复)
-                    # 只有当合力回落到安全区间 (<20N) 时，才允许下压
-                    elif f_filtered < 20.0:
-                        if fz_filtered < 3.0:
-                            # 严重悬空：Z力极小，说明笔尖完全在空中，极速砸回 (15mm/s)
-                            z_offset_relief -= 0.015 * dt
-                        elif fz_filtered < 8.0:
-                            # 接触不足：有微弱接触，缓慢压回到标称压力 (5mm/s)
-                            z_offset_relief -= 0.005 * dt
-                        
-                    # 限位折中：最大上限 12mm
-                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.012)
+                    elif self.state == SOFT_CONTACT:
+                        if fz_filtered > 5.0 or f_filtered > 15.0:
+                            self.state_counter += 1
+                            if self.state_counter >= 6:
+                                self.state = HARD_CONTACT
+                                self.state_counter = 0
+                                rospy.loginfo(f"🔴 状态转移: SOFT_CONTACT -> HARD_CONTACT (Fz={fz_filtered:.2f}N)")
+                        elif fz_filtered < 2.5:
+                            self.state = FREE_SPACE
+                            self.state_counter = 0
+                            draw_force_window = []  # 悬空时清空窗口
+                            rospy.loginfo(f"🔵 状态转移: SOFT_CONTACT -> FREE_SPACE (完全悬空)")
+                        else:
+                            self.state_counter = 0
+                            
+                    elif self.state == HARD_CONTACT:
+                        if fz_filtered < 3.5 and f_filtered < 12.0:
+                            self.state_counter += 1
+                            if self.state_counter >= 8:
+                                self.state = SOFT_CONTACT
+                                self.state_counter = 0
+                                rospy.loginfo(f"🟠 状态转移: HARD_CONTACT -> SOFT_CONTACT")
+                        elif fz_filtered < 2.0:
+                            self.state = FREE_SPACE
+                            self.state_counter = 0
+                            rospy.loginfo("🔵 阶段转换: 强制切换至 FREE_SPACE")
+                        else:
+                            self.state_counter = 0
+
+                    self.update_3d_force_control(fz_filtered, f_filtered, stuck_cnt, dt)
+                    target_z = wp['z_nominal'] + self.z_offset
                 else:
-                    # 提笔移动阶段，泄压量归零
-                    z_offset_relief = 0.0
-                
-                # 5. 目标高度 = 理论位置 - 基准定深 + 单向泄压补偿
-                fixed_press_depth = 0.002  # 默认固定下压深度 3mm
-                if wp['phase'] in ['draw', 'touch_down']:
-                    target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief
-                else:
+                    self.state = FREE_SPACE
+                    self.state_counter = 0
+                    self.z_offset = 0.0
                     target_z = wp['z_nominal']
                     
                 dz = target_z - self.current_z
