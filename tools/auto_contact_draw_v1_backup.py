@@ -265,6 +265,12 @@ class AutoContactDrawer:
         elif state == HARD_CONTACT:
             # 3. 稳定接触状态下，执行非对称 PD 控制
             force_error = self.target_force - fz_val
+            
+            # 【水平力矩抬升判定】
+            # 在水平方向遇到阻力（如陷入纸箱凹陷）时，比竖直方向更容易在腕部产生力矩
+            # 若检测到力矩异常突变，强行注入巨大负向误差，骗过控制器立刻触发最大速度抬升
+            if self.wrist_torque > self.wrist_torque_threshold:
+                force_error = -10.0
             d_error = (force_error - self.prev_force_error) / dt if dt > 0 else 0.0
             self.prev_force_error = force_error
             
