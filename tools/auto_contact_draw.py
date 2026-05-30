@@ -192,7 +192,7 @@ class AutoContactDrawer:
         
         # 引入接触判定缓存序列 (40Hz 下 7个周期约 0.175 秒)
         recent_forces = []
-        verify_size = 7
+        verify_size = 5
         
         while not rospy.is_shutdown():
             loop_cnt += 1
@@ -353,6 +353,12 @@ class AutoContactDrawer:
         z_offset_relief = 0.0  # 单向安全泄压补偿量 (0 ~ 15mm)
         dt = 0.025
         
+        # --- 新增：PI 力控参数 ---
+        force_integral = 0.0
+        target_force = 7.0  # 期望维持的目标压力 (N)
+        kp_force = 0.001    # 比例增益 (10N 误差瞬间抬升 10mm)
+        ki_force = 0.005    # 积分增益 (10N 误差持续1秒额外抬升 50mm)
+        
         for i, wp in enumerate(aligned_waypoints):
             if rospy.is_shutdown():
                 break
@@ -399,22 +405,33 @@ class AutoContactDrawer:
                 prev_servo_x = self.current_x
                 prev_servo_y = self.current_y
                 
-                # 4. 单向安全泄压机制 (One-Way Relief Valve)
+                # 4. PI 动态力控泄压机制 (带完美防积分饱和 Anti-Windup)
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if fz_filtered > 10.0 or stuck_cnt > 8:
-                        # 遇到真实异常大阻力(>10N)，或物理卡死，快速向上泄压 (5mm/s)
-                        z_offset_relief += 0.005 * dt
-                        if stuck_cnt > 8 and stuck_cnt % 5 == 0:
-                            rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
-                    elif fz_filtered < 5.0:
-                        # 阻力恢复安全范围(<5N)，缓慢恢复下压 (2mm/s)
-                        z_offset_relief -= 0.002 * dt
+                    if stuck_cnt > 8:
+                        # 物理卡死时，强行注入巨大正误差，使其极速拔出
+                        force_error = 20.0 
+                    else:
+                        force_error = fz_filtered - target_force
                         
-                    # 严格限制泄压量：最小为 0 (绝不额外深压)，最大为 15mm (抬升上限)
-                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.015)
+                    p_term = kp_force * force_error
+                    # 试算未限幅的输出
+                    unclamped_z = p_term + ki_force * (force_integral + force_error * dt)
+                    
+                    # 带有反向计算 (Back-Calculation) 的严格限位，保证响应零延迟
+                    if unclamped_z > 0.015:
+                        z_offset_relief = 0.015
+                        force_integral = (0.015 - p_term) / ki_force
+                    elif unclamped_z < 0.0:
+                        z_offset_relief = 0.0
+                        force_integral = (0.0 - p_term) / ki_force
+                    else:
+                        force_integral += force_error * dt
+                        z_offset_relief = unclamped_z
+                        
                 else:
-                    # 提笔移动阶段，泄压量归零
+                    # 提笔移动阶段，清空状态
                     z_offset_relief = 0.0
+                    force_integral = 0.0
                 
                 # 5. 目标高度 = 理论位置 - 基准定深 + 单向泄压补偿
                 fixed_press_depth = 0.002  # 默认固定下压深度 3mm
