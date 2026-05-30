@@ -372,7 +372,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 1.2  # 提高刚度至 1.2，适当加快走线速度
+            k_pos = 0.8  # 降低伺服刚度至 0.8，大幅放慢画线速度，给机械臂反应阻力的时间
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -410,18 +410,17 @@ class AutoContactDrawer:
                 
                 # 4. 单向安全泄压机制 (One-Way Relief Valve) - 3D 合力版
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if f_filtered > 12.0 or stuck_cnt > 8:
-                        # 阈值回调至 12N：提早反应。抬升速度 8mm/s
-                        z_offset_relief += 0.008 * dt
-                        if stuck_cnt > 8 and stuck_cnt % 5 == 0:
+                    if f_filtered > 10.0 or stuck_cnt > 5:
+                        # 阈值极限降低至 10N，且卡死判定从8降低到5：稍微觉得有点卡就立刻拔起 (10mm/s)
+                        z_offset_relief += 0.010 * dt
+                        if stuck_cnt > 5 and stuck_cnt % 5 == 0:
                             rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
-                    elif f_filtered < 10.0:
-                        # 【核心修正】提早触发下探 (阻力<10N就开始下压)，并且大幅提升下探速度至 10mm/s
-                        # 确保抬升后能瞬间压回纸面，解决长时间持续悬空画的问题
-                        z_offset_relief -= 0.010 * dt
+                    elif f_filtered < 8.0:
+                        # 阻力一掉下来 (<8N)，闪电般压回纸面 (15mm/s)
+                        z_offset_relief -= 0.015 * dt
                         
-                    # 限位折中：最大上限放宽为 10mm (1cm)，给大鼓包留足跨越空间
-                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.010)
+                    # 限位折中：最大上限放开到 12mm (1.2cm)，保证绝对能跨越障碍
+                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.012)
                 else:
                     # 提笔移动阶段，泄压量归零
                     z_offset_relief = 0.0
@@ -439,9 +438,9 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度 (提升最高限速至 0.06 m/s)
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
+                # XY 方向伺服速度 (硬限速降至 0.03 m/s，强行“慢工出细活”)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
                 
                 # Z 轴以纯位置控制伺服跟随 target_z
                 cmd.twist.linear_z = np.clip(k_pos * dz, -0.03, 0.03)
