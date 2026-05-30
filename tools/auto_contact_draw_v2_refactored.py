@@ -65,13 +65,15 @@ class AutoContactDrawer:
         self.activation_force_threshold = 1.0
         self.wrist_torque_threshold = 0.8  # 手腕力矩避障阈值 0.8 N.m
         
-        # PD 增益：Kp=0.005，Kd=0.001
-        self.kp = 0.005
-        self.kd = 0.001
+        # 非对称 PD 增益：抬起快，下压慢
+        self.kp_up = 0.005
+        self.kd_up = 0.001
+        self.kp_down = 0.0008
+        self.kd_down = 0.0001
         
         self.z_offset = 0.0           # 虚拟 Z 轴力控累积位移 (稳态补偿)
         self.max_z_offset = 0.008     # 最大抬升位移限制 (0.8 cm，防悬空)
-        self.min_z_offset = -0.03     # 最大下压位移限制 (-3.0 cm)
+        self.min_z_offset = -0.010    # 最大下压位移限制收紧为 -1.0 cm (防止压坏纸箱)
         
         # 零点力校准状态
         self.fz_bias = 0.0
@@ -347,12 +349,23 @@ class AutoContactDrawer:
             d_error = (force_error - self.prev_force_error) / dt if dt > 0 else 0.0
             self.prev_force_error = force_error
             
-            # 控制律计算补偿速度：v_z_comp = -(Kp * ef + Kd * d_ef)
-            # 这样设计避免了位置差分除以dt产生的放大效应，保证平稳运行
-            v_z_comp = -(self.kp * force_error + self.kd * d_error)
+            # 非对称 PD 控制速度设计：抬升用大增益，下压用小增益 (消除摩擦力矩干扰)
+            if force_error < 0.0:
+                # 力过大，需要向上抬升
+                v_z_comp = -(self.kp_up * force_error + self.kd_up * d_error)
+            else:
+                # 力不足，需要向下下压
+                v_z_comp = -(self.kp_down * force_error + self.kd_down * d_error)
             
             # 速度硬限幅 8mm/s，防止机械臂剧烈上下震动
             v_z_comp = np.clip(v_z_comp, -0.008, 0.008)
+            
+            # ⚠️ 【边界速度截断保护】
+            # 如果 z_offset 已经顶满边界，则限制速度继续往边界方向输出
+            if self.z_offset >= self.max_z_offset and v_z_comp > 0.0:
+                v_z_comp = 0.0
+            elif self.z_offset <= self.min_z_offset and v_z_comp < 0.0:
+                v_z_comp = 0.0
             
             # 计算该周期实际位置调整量：dz = v_z_comp * dt
             dz = v_z_comp * dt
@@ -474,7 +487,7 @@ class AutoContactDrawer:
                 dz = target_z - self.current_z
                 
                 dist_to_target = math.hypot(dx, dy)
-                if dist_to_target < 0.001:  # 到位距离 1mm，确保绘制每个点误差极小
+                if dist_to_target < 0.0005:  # 到位距离收紧至 0.5mm，确保高精度轨迹绘制
                     break
                     
                 cmd = TwistCommand()
