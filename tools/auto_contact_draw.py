@@ -430,6 +430,7 @@ class AutoContactDrawer:
             baseline_fz = air_fz_profile[i] if i < len(air_fz_profile) else air_fz_profile[-1]
             fz_pure = 0.0
             fz_filtered = self.current_fz
+            in_relief_halt = False  # 新增：停滞避让状态标志
             
             while not rospy.is_shutdown():
                 dx = target_x - self.current_x
@@ -461,22 +462,30 @@ class AutoContactDrawer:
                 prev_servo_x = self.current_x
                 prev_servo_y = self.current_y
                 
-                # 单向安全泄压机制 (基于净化后的 fz_pure)
+                # 单向安全泄压机制 (基于净化后的 fz_pure，带停滞避让)
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if fz_pure > 5.0 or stuck_cnt > 8:
-                        # 纯接触挤压力大于 5N，或物理卡死，适度抬升避让 (8mm/s)
-                        z_offset_relief += 0.008 * dt
-                        if stuck_cnt > 8 and stuck_cnt % 5 == 0:
-                            rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
-                    elif fz_pure < 1.5:
-                        # 纯接触力过小(<1.5N)，下压恢复速度 (4mm/s)
-                        z_offset_relief -= 0.004 * dt
+                    # 状态转移逻辑
+                    if fz_pure > 5.0 or stuck_cnt > 5:
+                        in_relief_halt = True
+                    elif fz_pure < 3.0:
+                        in_relief_halt = False
                         
-                    # 严格限制泄压量：最大 18mm
-                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.018)
+                    # 动作执行逻辑
+                    if in_relief_halt:
+                        # 触发停滞避让：高速拔出 (15mm/s)
+                        z_offset_relief += 0.015 * dt
+                        if stuck_cnt > 5 and stuck_cnt % 5 == 0:
+                            rospy.logwarn(f"⚠️ 物理卡死或大阻力 (stuck={stuck_cnt}, fz_pure={fz_pure:.1f})，XY停滞并极速抬笔！")
+                    elif fz_pure < 1.0:
+                        # 纯接触力极小，缓慢恢复下压
+                        z_offset_relief -= 0.002 * dt
+                        
+                    # 严格限制泄压量：最大 25mm，应对极端的纸箱坑洼
+                    z_offset_relief = np.clip(z_offset_relief, 0.0, 0.025)
                 else:
-                    # 提笔移动阶段，泄压量归零
+                    # 提笔移动阶段，泄压量归零，解除停滞
                     z_offset_relief = 0.0
+                    in_relief_halt = False
                 
                 # 目标高度 = 理论位置 - 基准定深 + 单向泄压补偿
                 fixed_press_depth = 0.003  # 默认固定下压深度 3mm
@@ -491,8 +500,14 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3
                 cmd.duration = 0
                 
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
+                # 【核心刹车逻辑】如果处于避让状态，彻底切断XY动力
+                if in_relief_halt:
+                    cmd.twist.linear_x = 0.0
+                    cmd.twist.linear_y = 0.0
+                else:
+                    cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
+                    cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
+                    
                 cmd.twist.linear_z = np.clip(k_pos * dz, -0.03, 0.03)
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
