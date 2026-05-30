@@ -417,7 +417,7 @@ class AutoContactDrawer:
                     z_offset_relief = 0.0
                 
                 # 5. 目标高度 = 理论位置 - 基准定深 + 单向泄压补偿
-                fixed_press_depth = 0.003  # 默认固定下压深度 3mm
+                fixed_press_depth = 0.002  # 默认固定下压深度 3mm
                 if wp['phase'] in ['draw', 'touch_down']:
                     target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief
                 else:
