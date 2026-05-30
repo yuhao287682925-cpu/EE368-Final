@@ -70,15 +70,15 @@ class AutoContactDrawer:
         self.state_counter = 0 # 状态迟滞校验帧计数器
         
         # 核心力控与对刀判定参数
-        self.base_target_force = 4.5  # 标称绘制压力 4.5N
-        self.target_force = 4.5       # 动态目标接触力 (可衰减防卡阻)
-        self.contact_threshold = 3.0  # 接触与力控激活判定阈值 3.0N
+        self.base_target_force = 6.0  # 标称绘制压力 6.0N
+        self.target_force = 6.0       # 动态目标接触力 (可衰减防卡阻)
+        self.contact_threshold = 4.0  # 接触与力控激活判定阈值 4.0N
         self.wrist_torque_threshold = 0.06 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.06 N.m
         
-        self.kp_up = 0.003            # 过度按压抬升增益 (减小)
-        self.kd_up = 0.0008
-        self.kp_down = 0.0015         # 接触不足下压增益 (增加)
-        self.kd_down = 0.0002
+        self.kp_up = 0.005            # 过度按压抬升增益 (快速向上抬)
+        self.kd_up = 0.001
+        self.kp_down = 0.0008         # 接触不足下压增益 (缓慢向下压)
+        self.kd_down = 0.0001
         
         self.max_step = 0.01          # 单周期最大位移微调量
         self.z_offset = 0.0           # 虚拟 Z 轴力控累积位移 (用于防飞车限位)
@@ -360,7 +360,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 1.2  # 提高刚度至 1.2，适当加快走线速度
+            k_pos = 0.8  # 降低刚度至 0.8，实现顺应性拖动
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -394,7 +394,7 @@ class AutoContactDrawer:
                 
                 # 2. 接触状态机跳转逻辑
                 if self.state == FREE_SPACE:
-                    if fz_filtered > 3.0:
+                    if fz_filtered > 3.5:
                         self.state_counter += 1
                         if self.state_counter >= 6:
                             self.state = SOFT_CONTACT
@@ -404,13 +404,13 @@ class AutoContactDrawer:
                         self.state_counter = 0
                         
                 elif self.state == SOFT_CONTACT:
-                    if fz_filtered > 4.0:
+                    if fz_filtered > 5.0:
                         self.state_counter += 1
                         if self.state_counter >= 6:
                             self.state = HARD_CONTACT
                             self.state_counter = 0
                             rospy.loginfo(f"🔴 状态转移: SOFT_CONTACT -> HARD_CONTACT (Fz={fz_filtered:.2f}N)")
-                    elif fz_filtered < 2.0:
+                    elif fz_filtered < 2.5:
                         self.state = FREE_SPACE
                         self.state_counter = 0
                         draw_force_window = []  # 悬空时清空窗口
@@ -419,7 +419,7 @@ class AutoContactDrawer:
                         self.state_counter = 0
                         
                 elif self.state == HARD_CONTACT:
-                    if fz_filtered < 3.0:
+                    if fz_filtered < 3.5:
                         self.state_counter += 1
                         if self.state_counter >= 8:
                             self.state = SOFT_CONTACT
@@ -431,10 +431,10 @@ class AutoContactDrawer:
                 # 3. 判定卡阻逻辑 (在绘制阶段且离目标点较远时)
                 if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
                     movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
-                    if movement < 0.00015: # 单周期位移小于 0.15mm (6mm/s，适度放宽以提升卡阻敏感度)
+                    if movement < 0.0003: # 单周期位移小于 0.3mm (说明可能被卡在纸箱凹陷里)
                         stuck_cnt += 1
                     else:
-                        stuck_cnt = max(0, stuck_cnt - 2) # 不再直接清零，保留少许历史状态防止高频抖动
+                        stuck_cnt = max(0, stuck_cnt - 1)
                 else:
                     stuck_cnt = 0
                     
@@ -442,10 +442,10 @@ class AutoContactDrawer:
                 prev_servo_y = self.current_y
                 
                 # 4. 动态调整目标压力
-                if self.state == HARD_CONTACT and stuck_cnt >= 6:
-                    # 目标力自适应衰减 (提早介入，从第 6 个卡阻周期开始更激进地平滑衰减)
-                    self.target_force = max(2.0, self.base_target_force - 0.6 * (stuck_cnt - 5))
-                    if stuck_cnt % 6 == 0:
+                if self.state == HARD_CONTACT and stuck_cnt >= 8:
+                    # 目标力自适应衰减 (从第 8 个卡阻周期开始平滑衰减，直到 2.5N)
+                    self.target_force = max(2.5, self.base_target_force - 0.44 * (stuck_cnt - 7))
+                    if stuck_cnt % 8 == 0:
                         rospy.logwarn(f"⚠️ 末端可能卡阻 (stuck_cnt={stuck_cnt})，降低目标压力至 {self.target_force:.2f}N")
                 else:
                     self.target_force = self.base_target_force
@@ -457,30 +457,16 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度
-                if wp['phase'] in ['draw', 'touch_down'] and self.state == FREE_SPACE:
-                    # 绘制阶段悬空判定增强：完全悬空时停止前进，专心下探寻找接触面
-                    cmd.twist.linear_x = 0.0
-                    cmd.twist.linear_y = 0.0
-                elif wp['phase'] in ['draw', 'touch_down'] and self.state == SOFT_CONTACT:
-                    # 软接触时，用较低速度前进，等待建立稳定接触，避免运动干扰导致误判
-                    cmd.twist.linear_x = np.clip(k_pos * dx, -0.015, 0.015)
-                    cmd.twist.linear_y = np.clip(k_pos * dy, -0.015, 0.015)
-                else:
-                    # 稳定接触或非绘制状态：提升最高限速至 0.06 m/s，配合 k_pos 增加拖动能力
-                    cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
-                    cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
+                # XY 方向伺服速度 (限幅从 0.025 提升到 0.04 m/s，提升拖动能力)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.04, 0.04)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.04, 0.04)
                 
                 # 6. Z 方向速度指令根据接触状态机来决定
                 if self.state == FREE_SPACE:
-                    if wp['phase'] in ['draw', 'touch_down']:
-                        # 在绘制阶段如果意外悬空，主动向下探寻找表面
-                        cmd.twist.linear_z = -0.008 # 8mm/s 主动寻找表面
-                    else:
-                        # 悬空状态下，朝着标称高度运动下探，限速 15mm/s
-                        target_z_nominal = wp['z_nominal']
-                        dz_nominal = target_z_nominal - self.current_z
-                        cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.015, 0.015)
+                    # 悬空状态下，朝着标称高度运动下探，限速 15mm/s
+                    target_z_nominal = wp['z_nominal']
+                    dz_nominal = target_z_nominal - self.current_z
+                    cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.015, 0.015)
                 elif self.state == SOFT_CONTACT:
                     # 软接触状态下，固定以 -2mm/s 缓慢下压
                     cmd.twist.linear_z = -0.002
