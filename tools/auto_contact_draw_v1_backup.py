@@ -70,9 +70,9 @@ class AutoContactDrawer:
         self.state_counter = 0 # 状态迟滞校验帧计数器
         
         # 核心力控与对刀判定参数
-        self.base_target_force = 4.0  # 标称绘制压力 4.0N
-        self.target_force = 4.0       # 动态目标接触力 (可衰减防卡阻)
-        self.contact_threshold = 2.5  # 接触与力控激活判定阈值 2.5N
+        self.base_target_force = 6.0  # 标称绘制压力 6.0N
+        self.target_force = 6.0       # 动态目标接触力 (可衰减防卡阻)
+        self.contact_threshold = 4.0  # 接触与力控激活判定阈值 4.0N
         self.wrist_torque_threshold = 0.06 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.06 N.m
         
         self.kp_up = 0.005            # 过度按压抬升增益 (快速向上抬)
@@ -397,7 +397,7 @@ class AutoContactDrawer:
                 
                 # 2. 接触状态机跳转逻辑
                 if self.state == FREE_SPACE:
-                    if fz_filtered > 2.5:
+                    if fz_filtered > 3.5:
                         self.state_counter += 1
                         if self.state_counter >= 6:
                             self.state = SOFT_CONTACT
@@ -407,13 +407,13 @@ class AutoContactDrawer:
                         self.state_counter = 0
                         
                 elif self.state == SOFT_CONTACT:
-                    if fz_filtered > 3.5:
+                    if fz_filtered > 5.0:
                         self.state_counter += 1
                         if self.state_counter >= 6:
                             self.state = HARD_CONTACT
                             self.state_counter = 0
                             rospy.loginfo(f"🔴 状态转移: SOFT_CONTACT -> HARD_CONTACT (Fz={fz_filtered:.2f}N)")
-                    elif fz_filtered < 1.5:
+                    elif fz_filtered < 2.5:
                         self.state = FREE_SPACE
                         self.state_counter = 0
                         draw_force_window = []  # 悬空时清空窗口
@@ -422,7 +422,7 @@ class AutoContactDrawer:
                         self.state_counter = 0
                         
                 elif self.state == HARD_CONTACT:
-                    if fz_filtered < 2.5:
+                    if fz_filtered < 3.5:
                         self.state_counter += 1
                         if self.state_counter >= 8:
                             self.state = SOFT_CONTACT
@@ -445,10 +445,10 @@ class AutoContactDrawer:
                 prev_servo_y = self.current_y
                 
                 # 4. 动态调整目标压力
-                if self.state == HARD_CONTACT and stuck_cnt >= 6:
-                    # 目标力自适应衰减 (提早介入，从第 6 个卡阻周期开始更激进地平滑衰减)
-                    self.target_force = max(1.5, self.base_target_force - 0.6 * (stuck_cnt - 5))
-                    if stuck_cnt % 6 == 0:
+                if self.state == HARD_CONTACT and stuck_cnt >= 8:
+                    # 目标力自适应衰减 (从第 8 个卡阻周期开始平滑衰减，直到 2.5N)
+                    self.target_force = max(2.5, self.base_target_force - 0.44 * (stuck_cnt - 7))
+                    if stuck_cnt % 8 == 0:
                         rospy.logwarn(f"⚠️ 末端可能卡阻 (stuck_cnt={stuck_cnt})，降低目标压力至 {self.target_force:.2f}N")
                 else:
                     self.target_force = self.base_target_force
