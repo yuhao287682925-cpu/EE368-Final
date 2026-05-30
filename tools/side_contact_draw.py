@@ -155,12 +155,14 @@ class SideContactDrawer:
             dv = wp['y'] - v_ref
             
             # Y 控制深度 (往 -Y 压入)。
-            # X 控制左右：面向 -Y 时，右边是 -X 轴。如果轨迹右边增加(x增大)，X轴要减小。
-            # Z 控制上下：Z 轴朝上。y 增大时，Z增加。
+            # X 控制左右：面向 -Y 时，右边是 -X 轴。轨迹 x 增大时，X减小。
+            # Z 控制上下：原轨迹星星是从上往下画（y减小, dv为负）。
+            # 为了实现“扎下去就往上画”，我们反转 Z 轴映射（减去 dv）。
+            # 这会把图形上下颠倒，但完美满足了从下往上画的物理需求！
             aligned_waypoints.append({
                 'x': contact_x - du,
                 'y': contact_y, 
-                'z': contact_z + dv, 
+                'z': contact_z - dv, 
                 'phase': wp['phase']
             })
             
