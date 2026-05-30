@@ -414,19 +414,22 @@ class AutoContactDrawer:
                 prev_servo_x = self.current_x
                 prev_servo_y = self.current_y
                 
-                # 4. 单向安全泄压机制 (One-Way Relief Valve) - 3D合力与Z轴保底
+                # 4. 单向安全泄压机制 (One-Way Relief Valve) - 混合解耦版本
                 if wp['phase'] in ['draw', 'touch_down']:
-                    # 优先级 1: 防悬空。如果 Z 轴法向力 < 4.5N，说明笔尖快要离开纸面，失去摩擦，必须立刻下压追赶
-                    if fz_filtered < 4.5:
-                        z_offset_relief -= 0.015 * dt  # 极速压回纸面 (15mm/s)
-                    # 优先级 2: 防卡死。合力暴增 (>20N)，说明撞上鼓包产生极大阻力，必须抬升避险
-                    elif f_filtered > 20.0 or stuck_cnt > 5:
-                        z_offset_relief += 0.010 * dt  # 快速抬升 (10mm/s)
+                    # 【最高优先级：避险抬升】
+                    # 只要满足以下任一高阻力条件，立刻抬升避险：
+                    # 1. Z 轴法向压力超过 12N (压到了纸板鼓包)
+                    # 2. 3D 合力超过 25N (远超悬空时的15N，说明横向刮擦到了强硬障碍物)
+                    # 3. 物理停滞超 5 帧 (完全卡死)
+                    if fz_filtered > 12.0 or f_filtered > 25.0 or stuck_cnt > 5:
+                        z_offset_relief += 0.015 * dt  # 极速抬升 (15mm/s)，绝不拖泥带水
                         if stuck_cnt > 5 and stuck_cnt % 5 == 0:
-                            rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
-                    # 优先级 3: 正常恢复。处于 15N 以下的安全区，可以缓慢压回原本设定的定深
-                    elif f_filtered < 15.0:
-                        z_offset_relief -= 0.005 * dt
+                            rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发极速抬笔泄压！")
+                            
+                    # 【第二优先级：恢复下压】
+                    # 只有当法向压力和合力都回落到极其安全的区间内，才允许压回，防止震荡
+                    elif fz_filtered < 8.0 and f_filtered < 20.0:
+                        z_offset_relief -= 0.005 * dt  # 平缓压回 (5mm/s)
                         
                     # 限位折中：最大上限 12mm
                     z_offset_relief = np.clip(z_offset_relief, 0.0, 0.012)
