@@ -46,39 +46,7 @@ class SideContactDrawer:
         self.vel_pub = rospy.Publisher("/my_gen3_lite/in/cartesian_velocity", TwistCommand, queue_size=1)
         self.force_pub = rospy.Publisher("/force_control/auto/estimated_f_normal", StdFloat64, queue_size=1)
         
-        # MoveIt 用于对准姿态
-        import moveit_commander
-        self.robot = moveit_commander.RobotCommander(robot_description="/my_gen3_lite/robot_description")
-        self.move_group = moveit_commander.MoveGroupCommander("arm", robot_description="/my_gen3_lite/robot_description", ns="/my_gen3_lite")
-        self.move_group.set_max_velocity_scaling_factor(0.1)
-        self.move_group.set_max_acceleration_scaling_factor(0.1)
 
-    def align_wrist_side(self, target_rpy_deg=(0.0, 90.0, 0.0)):
-        rospy.loginfo(f"🔄 正在自动对齐笔尖至侧面姿态: {target_rpy_deg} (准备面朝+X轴)...")
-        self.move_group.set_num_planning_attempts(3)
-        self.move_group.set_planning_time(2.0)
-        
-        current_pose = self.move_group.get_current_pose().pose
-        target_pose = Pose()
-        target_pose.position = current_pose.position
-        
-        r = R.from_euler('xyz', target_rpy_deg, degrees=True)
-        q = r.as_quat()
-        target_pose.orientation.x = q[0]
-        target_pose.orientation.y = q[1]
-        target_pose.orientation.z = q[2]
-        target_pose.orientation.w = q[3]
-        
-        self.move_group.set_pose_target(target_pose)
-        success = self.move_group.go(wait=True)
-        self.move_group.stop()
-        self.move_group.clear_pose_targets()
-        
-        if success:
-            rospy.loginfo("✅ 姿态已对准，笔尖直指正前方！")
-        else:
-            rospy.logerr("❌ 姿态对准失败！请检查是否有奇异点或碰撞。")
-            sys.exit(1)
 
     def joint_states_callback(self, msg):
         thetas = msg.position[0:6]
@@ -175,10 +143,7 @@ class SideContactDrawer:
         
         if not raw_waypoints: return
             
-        # 1. 自动对齐姿态 (笔尖朝 +X 轴，即 Pitch=90)
-        self.align_wrist_side(target_rpy_deg=(0.0, 90.0, 0.0))
-        
-        # 2. X 轴前移寻面
+        # 1. X 轴前移寻面
         contact_x, contact_y, contact_z = self.run_auto_touchdown()
         
         # 3. YZ 坐标转换 (将 2D 轨迹硬编码映射到机器人的正前方立面上)
