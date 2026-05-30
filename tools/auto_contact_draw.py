@@ -360,7 +360,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 0.8  # 降低刚度至 0.8，实现顺应性拖动
+            k_pos = 1.2  # 提高刚度至 1.2，适当加快走线速度
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -431,10 +431,10 @@ class AutoContactDrawer:
                 # 3. 判定卡阻逻辑 (在绘制阶段且离目标点较远时)
                 if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
                     movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
-                    if movement < 0.00005: # 单周期位移小于 0.05mm (2mm/s，说明可能被卡在纸箱凹陷里)
+                    if movement < 0.00015: # 单周期位移小于 0.15mm (6mm/s，适度放宽以提升卡阻敏感度)
                         stuck_cnt += 1
                     else:
-                        stuck_cnt = 0 # 一旦恢复运动直接清零
+                        stuck_cnt = max(0, stuck_cnt - 2) # 不再直接清零，保留少许历史状态防止高频抖动
                 else:
                     stuck_cnt = 0
                     
@@ -442,10 +442,10 @@ class AutoContactDrawer:
                 prev_servo_y = self.current_y
                 
                 # 4. 动态调整目标压力
-                if self.state == HARD_CONTACT and stuck_cnt >= 8:
-                    # 目标力自适应衰减 (从第 8 个卡阻周期开始平滑衰减，直到 2.5N)
-                    self.target_force = max(2.5, self.base_target_force - 0.44 * (stuck_cnt - 7))
-                    if stuck_cnt % 8 == 0:
+                if self.state == HARD_CONTACT and stuck_cnt >= 6:
+                    # 目标力自适应衰减 (提早介入，从第 6 个卡阻周期开始更激进地平滑衰减)
+                    self.target_force = max(2.0, self.base_target_force - 0.6 * (stuck_cnt - 5))
+                    if stuck_cnt % 6 == 0:
                         rospy.logwarn(f"⚠️ 末端可能卡阻 (stuck_cnt={stuck_cnt})，降低目标压力至 {self.target_force:.2f}N")
                 else:
                     self.target_force = self.base_target_force
@@ -457,9 +457,9 @@ class AutoContactDrawer:
                 cmd.reference_frame = 3 # 基座坐标系
                 cmd.duration = 0
                 
-                # XY 方向伺服速度 (限幅从 0.025 提升到 0.04 m/s，提升拖动能力)
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.04, 0.04)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.04, 0.04)
+                # XY 方向伺服速度 (提升最高限速至 0.06 m/s，配合 k_pos 增加拖动能力)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.06, 0.06)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.06, 0.06)
                 
                 # 6. Z 方向速度指令根据接触状态机来决定
                 if self.state == FREE_SPACE:
