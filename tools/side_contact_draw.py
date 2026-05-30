@@ -139,19 +139,15 @@ class SideContactDrawer:
             
         contact_x, contact_y, contact_z = self.run_auto_touchdown()
         
-        # 让寻面的接触点成为整个轨迹的“正下方最低点”
-        draw_wps = [wp for wp in raw_waypoints if wp['phase'] in ['draw', 'touch_down']]
-        if not draw_wps:
-            draw_wps = raw_waypoints
-            
-        min_y = min(wp['y'] for wp in draw_wps)
-        max_x = max(wp['x'] for wp in draw_wps)
-        min_x = min(wp['x'] for wp in draw_wps)
-        
-        # u_ref 取轨迹的横向中心，保证画作左右居中在接触点上方
-        u_ref = (max_x + min_x) / 2.0
-        # v_ref 取轨迹的最低点，保证 dv 始终 >= 0，即 Z 始终大于接触点高度
-        v_ref = min_y
+        first_draw_idx = 0
+        for idx, wp in enumerate(raw_waypoints):
+            if wp['phase'] in ['draw', 'touch_down']:
+                first_draw_idx = idx
+                break
+                
+        # 恢复默认映射：你扎下去的“接触点”，就是轨迹的第一笔起笔点！
+        u_ref = raw_waypoints[first_draw_idx]['x']
+        v_ref = raw_waypoints[first_draw_idx]['y']
         
         aligned_waypoints = []
         for wp in raw_waypoints:
