@@ -5,31 +5,21 @@ import math
 import numpy as np
 import rospy
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64
 from kortex_driver.msg import TwistCommand
-from scipy.spatial.transform import Rotation as R
 
-# 动态添加路径以导入已有的 jacobian.py
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
 
 from jacobian import NLinkArm
+from scipy.spatial.transform import Rotation as R
 
-def wrap_angle(angle):
-    """
-    将角度限制在 [-pi, pi] 之间
-    """
-    return (angle + math.pi) % (2.0 * math.pi) - math.pi
-
-class WristAligner:
+class WristAlignerSide:
     def __init__(self):
-        rospy.init_node('align_wrist', anonymous=True)
+        rospy.init_node('align_wrist_side', anonymous=True)
         
-        # 初始化 Gen3-lite DH 模型的机械臂
+        # 初始化 Gen3-lite DH 模型
         dh_params_list = np.array([[0, 0, 243.3/1000, 0],
                                    [math.pi/2, 0, 10/1000, 0+math.pi/2],
                                    [math.pi, 280/1000, 0, 0+math.pi/2],
@@ -38,109 +28,104 @@ class WristAligner:
                                    [-math.pi/2, 0, 235/1000, 0-math.pi/2]])
         self.arm_model = NLinkArm(dh_params_list)
         
-        # 当前末端状态缓存
-        self.alpha = 0.0
-        self.beta = 0.0
-        self.gamma = 0.0
-        self.R_curr = np.identity(3)
+        self.R_curr = np.eye(3)
+        self.thetas = np.zeros(6)
         self.received_state = False
         self.msg_count = 0
         
-        # 订阅关节状态话题
         rospy.Subscriber("/my_gen3_lite/joint_states", JointState, self.joint_states_callback)
-        
-        # 发布给 Kortex 的速度控制话题
         self.vel_pub = rospy.Publisher("/my_gen3_lite/in/cartesian_velocity", TwistCommand, queue_size=1)
-        
-        rospy.loginfo("🟢 闭环三维姿态调直节点已启动！")
-        rospy.loginfo("   >> 目标 RPY 姿态: [0.0, 180.0, 0.0] 度")
-        rospy.loginfo("   >> 基于三维轴角反馈控制，同时调直并校准第一个角")
-        
+
     def joint_states_callback(self, msg):
         self.msg_count += 1
         thetas = msg.position[0:6]
-        if len(thetas) < 6:
-            return
+        if len(thetas) < 6: return
+        self.thetas = np.array(thetas)
             
-        # 实时正运动学解算当前旋转矩阵
         trans = self.arm_model.transformation_matrix(thetas)
         self.R_curr = trans[0:3, 0:3]
-        
-        # 解算欧拉角用于诊断打印
-        self.alpha, self.beta, self.gamma = self.arm_model.euler_angle(thetas)
         self.received_state = True
         
         if self.msg_count % 40 == 0:
-            rospy.loginfo(f"📊 关节回调正常 | Beta倾斜角: {math.degrees(self.beta):.2f}° | Alpha角: {math.degrees(self.alpha):.2f}°")
+            rospy.loginfo("📊 状态正常 | 正在进行动态位置释放对齐...")
 
     def run(self):
         rospy.loginfo("⏳ 等待接收关节状态话题数据...")
-        # 确保已接收到机器人状态
         while not self.received_state and not rospy.is_shutdown():
             rospy.sleep(0.1)
             
         rospy.loginfo("✅ 成功连接上 /my_gen3_lite/joint_states 话题！")
         rate = rospy.Rate(40) # 40Hz
         
-        # 设定目标姿态：笔身完全垂直向前 (即指向 +X 轴)
-        # 对应 RPY 旋转 [0.0, 90.0, 0.0] 度
-        r_target = R.from_euler('xyz', [0.0, 90.0, 0.0], degrees=True)
-        
-        k_rot = 0.8          # 控制增益降低，防止在终点来回跳动
-        max_ang_vel = 0.15   # 限制最大角速度为 0.15 rad/s，平滑逼近
-        stable_count = 0     # 连续到位计数器
+        k_rot = 1.0          
+        max_ang_vel = 0.2    
+        stable_count = 0     
         align_success = False
         
-        rospy.loginfo("🔄 开始基于三维轴角闭环姿态调直与首角校正控制...")
+        rospy.loginfo("🔄 开始自适应侧面对齐 (释放位置约束，仅对齐笔尖至 +X 轴，允许自然偏移)...")
         
         while not rospy.is_shutdown():
-            # 计算当前与目标的旋转偏差 (兼容旧版 scipy 的 from_matrix 与 from_dcm)
-            if hasattr(R, 'from_matrix'):
-                r_curr = R.from_matrix(self.R_curr)
-            else:
-                r_curr = R.from_dcm(self.R_curr)
-                
-            r_err = r_target * r_curr.inv()
-            omega_err = r_err.as_rotvec()
+            # 1. 纯指向误差计算 (对应 θY 任意)
+            v_curr = self.R_curr[:, 2] # 当前工具 Z 轴 (笔尖指向)
+            v_target = np.array([1.0, 0.0, 0.0]) # 目标指向正前方 +X 轴
             
-            err_norm = np.linalg.norm(omega_err)
+            dot = np.clip(np.dot(v_curr, v_target), -1.0, 1.0)
+            angle = math.acos(dot)
             
-            # 判断是否连续稳定到位 (偏差小于 0.015 弧度，约 0.85 度)
-            if err_norm < 0.015:
+            if angle < 0.015: # 约 0.85 度
                 stable_count += 1
-                if stable_count >= 12: # 持续 12 个周期 (0.3 秒) 稳定在死区内，安全退出
+                if stable_count >= 12: 
                     align_success = True
                     break
+                omega_cmd = np.zeros(3)
             else:
                 stable_count = 0
+                axis = np.cross(v_curr, v_target)
+                if np.linalg.norm(axis) < 1e-5:
+                    axis = np.array([0.0, 1.0, 0.0])
+                else:
+                    axis = axis / np.linalg.norm(axis)
+                    
+                omega_cmd = k_rot * angle * axis
+                omega_cmd = np.clip(omega_cmd, -max_ang_vel, max_ang_vel)
                 
+            # 2. 位置释放控制核心算法 (避免卡死)
+            # 通过提取角速度雅可比，计算最小关节速度，并前馈线速度，让位置自然偏移
+            J = self.arm_model.basic_jacobian(self.thetas)
+            # 假设标准雅可比: 0:3 为线速度, 3:6 为角速度
+            J_linear = J[0:3, :]
+            J_angular = J[3:6, :]
+            
+            # 使用伪逆计算实现该角速度所需的最小关节角速度
+            q_dot = np.linalg.pinv(J_angular).dot(omega_cmd)
+            
+            # 伴随产生的自然位置偏移速度
+            v_linear = J_linear.dot(q_dot)
+            
+            # 3. 发布 TwistCommand
             cmd = TwistCommand()
             cmd.reference_frame = 3 # 基座坐标系
             cmd.duration = 0
             
-            # 位置保持绝对不动
-            cmd.twist.linear_x = 0.0
-            cmd.twist.linear_y = 0.0
-            cmd.twist.linear_z = 0.0
+            # 允许线速度跟随关节运动自然释放，而不是强行锁定在 0 (强行锁定 0 极易导致运动学奇异/卡死)
+            if np.linalg.norm(omega_cmd) < 1e-4:
+                cmd.twist.linear_x = 0.0
+                cmd.twist.linear_y = 0.0
+                cmd.twist.linear_z = 0.0
+            else:
+                # 给一定的阻尼系数，防止偏移过快，0.8 经验值
+                cmd.twist.linear_x = 0.8 * v_linear[0]
+                cmd.twist.linear_y = 0.8 * v_linear[1]
+                cmd.twist.linear_z = 0.8 * v_linear[2]
             
-            # 计算角速度
-            ang_vel = k_rot * omega_err
-            
-            # 引入极小偏差死区，彻底避免目标位置高频抖动
-            if err_norm < 0.008: # 约 0.45 度
-                ang_vel = np.zeros(3)
-                
-            # 裁切角速度范围，平滑限制
-            ang_vel = np.clip(ang_vel, -max_ang_vel, max_ang_vel)
-            
-            cmd.twist.angular_x = ang_vel[0]
-            cmd.twist.angular_y = ang_vel[1]
-            cmd.twist.angular_z = ang_vel[2]
+            cmd.twist.angular_x = omega_cmd[0]
+            cmd.twist.angular_y = omega_cmd[1]
+            cmd.twist.angular_z = omega_cmd[2]
             
             self.vel_pub.publish(cmd)
             rate.sleep()
             
-        # 调平完毕后发送零速度指令锁定机械臂
+        # 发送零速度指令锁定机械臂
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
         for _ in range(15):
@@ -148,14 +133,14 @@ class WristAligner:
             rospy.sleep(0.005)
             
         if align_success:
-            rospy.loginfo(f"✅ 姿态与首角调直成功！当前: Beta倾斜={math.degrees(self.beta):.2f}°, Alpha={math.degrees(self.alpha):.2f}°")
-            rospy.loginfo("👉 提示：现在你可以用手柄将垂直状态的机械臂挪到你想画图的纸箱起点正上方，然后启动 auto_contact_draw.py 开始绘制！")
+            rospy.loginfo("✅ 侧面姿态自动调直成功！笔尖现已直指 +X 轴 (正前方)！")
+            rospy.loginfo("👉 提示：虽然位置发生了微小偏移，但没关系，现在请将笔尖平移到纸板起点，然后运行 side_contact_draw.py 开始作画！")
         else:
             rospy.logerr("❌ 姿态调直超时或异常终止。")
 
 if __name__ == '__main__':
     try:
-        aligner = WristAligner()
+        aligner = WristAlignerSide()
         aligner.run()
     except rospy.ROSInterruptException:
         pass
