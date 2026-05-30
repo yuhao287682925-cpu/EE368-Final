@@ -358,6 +358,7 @@ class AutoContactDrawer:
         
         # 将力滤波器缓存和泄压补偿量外提，实现跨点连续状态管理
         draw_force_window = []
+        fz_window = []
         draw_window_size = 4
         z_offset_relief = 0.0  # 单向安全泄压补偿量 (0 ~ 15mm)
         dt = 0.025
@@ -389,11 +390,16 @@ class AutoContactDrawer:
                 if dist_to_target < 0.005: # 到位距离 5mm
                     break
                     
-                # 2. 绘图力滑动窗口维护与平滑 (切换为 3D 合力)
+                # 2. 绘图力滑动窗口维护与平滑 (3D 合力与 Z 轴力双监控)
                 draw_force_window.append(self.current_f_total)
                 if len(draw_force_window) > draw_window_size:
                     draw_force_window.pop(0)
                 f_filtered = np.mean(draw_force_window) if len(draw_force_window) >= draw_window_size else self.current_f_total
+                
+                fz_window.append(self.current_fz)
+                if len(fz_window) > draw_window_size:
+                    fz_window.pop(0)
+                fz_filtered = np.mean(fz_window) if len(fz_window) >= draw_window_size else self.current_fz
                 
                 # 3. 判定物理卡阻 (在绘制阶段且离目标点较远时)
                 if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.01: # 只有距离目标大于10mm时才检测卡阻，避免接近目标自然减速时误判
@@ -408,18 +414,21 @@ class AutoContactDrawer:
                 prev_servo_x = self.current_x
                 prev_servo_y = self.current_y
                 
-                # 4. 单向安全泄压机制 (One-Way Relief Valve) - 3D 合力版
+                # 4. 单向安全泄压机制 (One-Way Relief Valve) - 3D合力与Z轴保底
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if f_filtered > 10.0 or stuck_cnt > 5:
-                        # 阈值极限降低至 10N，且卡死判定从8降低到5：稍微觉得有点卡就立刻拔起 (10mm/s)
-                        z_offset_relief += 0.010 * dt
+                    # 优先级 1: 防悬空。如果 Z 轴法向力 < 4.5N，说明笔尖快要离开纸面，失去摩擦，必须立刻下压追赶
+                    if fz_filtered < 4.5:
+                        z_offset_relief -= 0.015 * dt  # 极速压回纸面 (15mm/s)
+                    # 优先级 2: 防卡死。合力暴增 (>20N)，说明撞上鼓包产生极大阻力，必须抬升避险
+                    elif f_filtered > 20.0 or stuck_cnt > 5:
+                        z_offset_relief += 0.010 * dt  # 快速抬升 (10mm/s)
                         if stuck_cnt > 5 and stuck_cnt % 5 == 0:
                             rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
-                    elif f_filtered < 8.0:
-                        # 阻力一掉下来 (<8N)，闪电般压回纸面 (15mm/s)
-                        z_offset_relief -= 0.015 * dt
+                    # 优先级 3: 正常恢复。处于 15N 以下的安全区，可以缓慢压回原本设定的定深
+                    elif f_filtered < 15.0:
+                        z_offset_relief -= 0.005 * dt
                         
-                    # 限位折中：最大上限放开到 12mm (1.2cm)，保证绝对能跨越障碍
+                    # 限位折中：最大上限 12mm
                     z_offset_relief = np.clip(z_offset_relief, 0.0, 0.012)
                 else:
                     # 提笔移动阶段，泄压量归零
@@ -453,7 +462,7 @@ class AutoContactDrawer:
                 self.vel_pub.publish(cmd)
                 rate.sleep()
                 
-            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 3D合力: {self.current_f_total:.2f}N | Relief: {z_offset_relief:.4f}m | Target Z: {target_z:.4f}m")
+            rospy.loginfo(f"进度: {i+1}/{len(aligned_waypoints)} | 3D: {self.current_f_total:.1f}N, Z: {self.current_fz:.1f}N | Relief: {z_offset_relief:.4f}m | Target Z: {target_z:.4f}m")
             
         # 5. 绘制结束，到达终点后稍作停顿，平息机械臂末端抖动
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
