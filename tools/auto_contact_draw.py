@@ -341,55 +341,116 @@ class AutoContactDrawer:
             }
             aligned_waypoints.append(aligned_wp)
             
-        rospy.loginfo("✅ 轨迹对准成功！开始启动高频速度伺服绘图...")
+        rospy.loginfo("✅ 轨迹对准成功！")
         
-        # 4. 高频速度伺服跟踪与力控循环
         rate = rospy.Rate(40) # 40Hz
         dt = 0.025
         
-        # 将力滤波器缓存和泄压补偿量外提，实现跨点连续状态管理
-        draw_force_window = []
-        draw_window_size = 4
-        z_offset_relief = 0.0  # 单向安全泄压补偿量 (0 ~ 15mm)
-        dt = 0.025
+        # --- 新增：阶段 1：悬空轨迹预演去皮 (Phase 1: Air Tracing) ---
+        rospy.loginfo("🌬️ [阶段 1/2] 开始悬空轨迹预演，精确测绘姿态重力漂移...")
+        
+        air_fz_profile = []
+        k_pos_air = 1.2
+        v_max_air = 0.05
         
         for i, wp in enumerate(aligned_waypoints):
             if rospy.is_shutdown():
                 break
                 
-            quat = get_orientation_for_normal(wp['nx'], wp['ny'], wp['nz'])
+            target_x = wp['x']
+            target_y = wp['y']
+            # 强制悬空 10mm
+            target_z = wp['z_nominal'] + 0.010
             
-            # 位置控制的目标点 XY
+            while not rospy.is_shutdown():
+                dx = target_x - self.current_x
+                dy = target_y - self.current_y
+                dz = target_z - self.current_z
+                
+                if math.hypot(dx, dy) < 0.005: # 到位距离 5mm
+                    break
+                    
+                cmd = TwistCommand()
+                cmd.reference_frame = 3
+                cmd.duration = 0
+                cmd.twist.linear_x = np.clip(k_pos_air * dx, -v_max_air, v_max_air)
+                cmd.twist.linear_y = np.clip(k_pos_air * dy, -v_max_air, v_max_air)
+                cmd.twist.linear_z = np.clip(k_pos_air * dz, -v_max_air, v_max_air)
+                cmd.twist.angular_x = 0.0
+                cmd.twist.angular_y = 0.0
+                cmd.twist.angular_z = 0.0
+                self.vel_pub.publish(cmd)
+                rate.sleep()
+                
+            # 记录该点的漂移偏差力
+            air_fz_profile.append(self.current_fz)
+            if i % 10 == 0:
+                rospy.loginfo(f"🌬️ 预演进度: {i+1}/{len(aligned_waypoints)} | 记录悬空漂移力: {self.current_fz:.2f}N")
+                
+        rospy.loginfo("✅ 预演去皮完成！准备返回起点并进入真正的物理贴合绘制阶段。")
+        
+        # 强制将机械臂抬高，移回第一点上方，确保平滑过渡
+        start_wp = aligned_waypoints[0]
+        while not rospy.is_shutdown():
+            dx = start_wp['x'] - self.current_x
+            dy = start_wp['y'] - self.current_y
+            dz = (start_wp['z_nominal'] + 0.010) - self.current_z
+            if math.hypot(dx, dy) < 0.005 and abs(dz) < 0.005:
+                break
+            cmd = TwistCommand()
+            cmd.reference_frame = 3
+            cmd.twist.linear_x = np.clip(1.0 * dx, -0.05, 0.05)
+            cmd.twist.linear_y = np.clip(1.0 * dy, -0.05, 0.05)
+            cmd.twist.linear_z = np.clip(1.0 * dz, -0.05, 0.05)
+            self.vel_pub.publish(cmd)
+            rate.sleep()
+            
+        rospy.loginfo("✍️ [阶段 2/2] 开始启动高频速度伺服纯物理贴合绘图...")
+        
+        # --- 阶段 2：正式绘制 (Phase 2: Contact Drawing) ---
+        draw_force_window = []
+        draw_window_size = 4
+        z_offset_relief = 0.0  # 单向安全泄压补偿量
+        
+        for i, wp in enumerate(aligned_waypoints):
+            if rospy.is_shutdown():
+                break
+                
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 0.8  # 降低刚度至 0.8，减慢运动速度确保每一个点误差极小
+            k_pos = 0.8  # 保持 0.8 刚度减慢运动速度确保每一个点误差极小
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
             prev_servo_y = self.current_y
-            target_z = wp['z_nominal'] # 初始化 target_z，防止循环直接 break 导致未赋值
+            target_z = wp['z_nominal']
             
-            # 位置伺服走点循环
+            # 提取基准漂移力
+            baseline_fz = air_fz_profile[i] if i < len(air_fz_profile) else air_fz_profile[-1]
+            fz_pure = 0.0
+            
             while not rospy.is_shutdown():
-                # 1. 计算与目标点的距离
                 dx = target_x - self.current_x
                 dy = target_y - self.current_y
                 dist_to_target = math.hypot(dx, dy)
                 
-                if dist_to_target < 0.005: # 到位距离 5mm
+                if dist_to_target < 0.005:
                     break
                     
-                # 2. 绘图力滑动窗口维护与平滑
+                # 绘图力滑动窗口维护与平滑
                 draw_force_window.append(self.current_fz)
                 if len(draw_force_window) > draw_window_size:
                     draw_force_window.pop(0)
                 fz_filtered = np.mean(draw_force_window) if len(draw_force_window) >= draw_window_size else self.current_fz
                 
-                # 3. 判定物理卡阻 (在绘制阶段且离目标点较远时)
-                if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.01: # 只有距离目标大于10mm时才检测卡阻，避免接近目标自然减速时误判
+                # 【核心】：计算去皮后的纯挤压力
+                fz_pure = max(0.0, fz_filtered - baseline_fz)
+                
+                # 判定物理卡阻
+                if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.01:
                     movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
-                    if movement < 0.0001: # 单周期 XY 位移极小 (<0.1mm，即实际速度<4mm/s，说明真卡死了)
+                    if movement < 0.0001: 
                         stuck_cnt += 1
                     else:
                         stuck_cnt = max(0, stuck_cnt - 1)
@@ -399,24 +460,24 @@ class AutoContactDrawer:
                 prev_servo_x = self.current_x
                 prev_servo_y = self.current_y
                 
-                # 4. 单向安全泄压机制 (One-Way Relief Valve)
+                # 单向安全泄压机制 (基于净化后的 fz_pure)
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if fz_filtered > 9.0 or stuck_cnt > 8:
-                        # 折中抬升参数：遇到阻力(>9N)时，以 8mm/s 的速度适度抬升
+                    if fz_pure > 5.0 or stuck_cnt > 8:
+                        # 纯接触挤压力大于 5N，或物理卡死，适度抬升避让 (8mm/s)
                         z_offset_relief += 0.008 * dt
                         if stuck_cnt > 8 and stuck_cnt % 5 == 0:
                             rospy.logwarn(f"⚠️ 物理卡死 (stuck_cnt={stuck_cnt})，触发自动抬笔泄压！")
-                    elif fz_filtered < 4.5:
-                        # 阻力恢复安全范围(<4.5N)，下压恢复速度适当调快至 4mm/s，防止抬升过多后下压太慢导致一直悬空
+                    elif fz_pure < 1.5:
+                        # 纯接触力过小(<1.5N)，下压恢复速度 (4mm/s)
                         z_offset_relief -= 0.004 * dt
                         
-                    # 严格限制泄压量：最小为 0 (绝不额外深压)，最大为 18mm (限制抬升上限，避免抬得过高)
+                    # 严格限制泄压量：最大 18mm
                     z_offset_relief = np.clip(z_offset_relief, 0.0, 0.018)
                 else:
                     # 提笔移动阶段，泄压量归零
                     z_offset_relief = 0.0
                 
-                # 5. 目标高度 = 理论位置 - 基准定深 + 单向泄压补偿
+                # 目标高度 = 理论位置 - 基准定深 + 单向泄压补偿
                 fixed_press_depth = 0.003  # 默认固定下压深度 3mm
                 if wp['phase'] in ['draw', 'touch_down']:
                     target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief
@@ -426,17 +487,12 @@ class AutoContactDrawer:
                 dz = target_z - self.current_z
                 
                 cmd = TwistCommand()
-                cmd.reference_frame = 3 # 基座坐标系
+                cmd.reference_frame = 3
                 cmd.duration = 0
                 
-                # XY 方向伺服速度 (降低限速至 0.03 m/s，放慢走线速度)
                 cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
                 cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
-                
-                # Z 轴以纯位置控制伺服跟随 target_z
                 cmd.twist.linear_z = np.clip(k_pos * dz, -0.03, 0.03)
-                
-                # 保持姿态稳定，角速度设为 0
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
                 cmd.twist.angular_z = 0.0
@@ -444,7 +500,7 @@ class AutoContactDrawer:
                 self.vel_pub.publish(cmd)
                 rate.sleep()
                 
-            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | Fz: {self.current_fz:.2f}N | Relief: {z_offset_relief:.4f}m | Target Z: {target_z:.4f}m")
+            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 纯受力 Fz_pure: {fz_pure:.2f}N (实测{fz_filtered:.1f}-基准{baseline_fz:.1f}) | Relief: {z_offset_relief:.4f}m")
             
         # 5. 绘制结束，到达终点后稍作停顿，平息机械臂末端抖动
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
