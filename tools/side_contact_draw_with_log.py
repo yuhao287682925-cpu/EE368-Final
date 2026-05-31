@@ -215,14 +215,14 @@ class SideContactDrawer:
                 err_z = target_z - curr_pos[2]
                 dist_to_target = math.hypot(err_x, err_z)
                 
-                if dist_to_target < 0.001:
+                if dist_to_target < 0.0005: # 减小允许误差，强制逼近笔尖真实位置
                     break
                     
                 movement = math.hypot(curr_pos[0] - prev_servo_x, curr_pos[2] - prev_servo_z)
                 actual_speed = movement / dt if dt > 0 else 0.0
                 
-                max_speed = 0.025 # 降低侧向最高限速，提升抗重力跟随精度
-                k_pos_near = 4.0  # 降低P控制刚度，防止物理柔性形变
+                max_speed = 0.045 # 适当加快速度
+                k_pos_near = 12.0 # 增强跟踪刚度，防止在目标点附近静摩擦卡死
                 
                 cmd_vx_raw = k_pos_near * err_x
                 cmd_vz_raw = k_pos_near * err_z
@@ -239,8 +239,8 @@ class SideContactDrawer:
                 expected_speed = math.hypot(cmd_vx, cmd_vz)
                 
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if expected_speed > 0.005 and relief_cooldown == 0:
-                        if actual_speed < 0.25 * expected_speed or actual_speed < 0.002:
+                    if expected_speed > 0.003 and relief_cooldown == 0:
+                        if actual_speed < 0.3 * expected_speed or actual_speed < 0.002:
                             stuck_cnt += 1
                         else:
                             stuck_cnt = 0
