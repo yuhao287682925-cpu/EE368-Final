@@ -166,7 +166,7 @@ if __name__ == "__main__":
                                [math.pi, 280/1000, 0, 0+math.pi/2],
                                [math.pi/2, 0, 245/1000, 0+math.pi/2],
                                [math.pi/2, 0, 57/1000, 0],
-                               [-math.pi/2, 0, 235/1000, 0-math.pi/2]])
+                               [-math.pi/2, 0, 245/1000, 0-math.pi/2]])
     # 实例化机械臂
     gen3_lite = NLinkArm(dh_params_list)
 
