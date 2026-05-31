@@ -82,6 +82,10 @@ class SideContactDrawerPlane:
         self.current_x = 0.0
         self.current_y = 0.0
         self.current_z = 0.0
+        self.current_roll = 0.0
+        self.current_pitch = 0.0
+        self.current_yaw = 0.0
+        self.current_quaternion = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
         self.is_static = True
 
         rospy.Subscriber("/my_gen3_lite/joint_states", JointState, self.joint_states_callback)
@@ -103,6 +107,9 @@ class SideContactDrawerPlane:
             return
         tool_pose = self.arm_model.forward_kinematics(thetas)
         self.current_x, self.current_y, self.current_z = tool_pose[0:3]
+        self.current_roll, self.current_pitch, self.current_yaw = tool_pose[3:6]
+        quat = R.from_euler('xyz', [self.current_roll, self.current_pitch, self.current_yaw]).as_quat()
+        self.current_quaternion = Quaternion(x=float(quat[0]), y=float(quat[1]), z=float(quat[2]), w=float(quat[3]))
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
         raw_fy = tool_force[1]
@@ -122,6 +129,82 @@ class SideContactDrawerPlane:
             self.fy_bias = 0.9995 * self.fy_bias + 0.0005 * raw_fy
             self.current_fy = abs(raw_fy - self.fy_bias)
         self.force_fy_pub.publish(Float64(self.current_fy))
+
+    def get_cached_pose(self):
+        pose = Pose()
+        pose.position.x = self.current_x
+        pose.position.y = self.current_y
+        pose.position.z = self.current_z
+        pose.orientation = self.current_quaternion
+        return pose
+
+    def move_to_cartesian_target(self, target_x, target_y, target_z, timeout=4.0):
+        """用速度指令逼近目标位置，避免依赖 MoveIt 的实时 robot state。"""
+        rate = rospy.Rate(40)
+        start = rospy.get_time()
+        while not rospy.is_shutdown() and (rospy.get_time() - start) < timeout:
+            dx = target_x - self.current_x
+            dy = target_y - self.current_y
+            dz = target_z - self.current_z
+            dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if dist < 0.0015:
+                break
+            cmd = TwistCommand()
+            cmd.reference_frame = 3
+            cmd.twist.linear_x = float(np.clip(2.5 * dx, -0.03, 0.03))
+            cmd.twist.linear_y = float(np.clip(2.5 * dy, -0.02, 0.02))
+            cmd.twist.linear_z = float(np.clip(2.5 * dz, -0.03, 0.03))
+            cmd.twist.angular_x = 0.0
+            cmd.twist.angular_y = 0.0
+            cmd.twist.angular_z = 0.0
+            self.vel_pub.publish(cmd)
+            rate.sleep()
+
+        stop_cmd = TwistCommand()
+        stop_cmd.reference_frame = 3
+        for _ in range(6):
+            self.vel_pub.publish(stop_cmd)
+            rospy.sleep(0.01)
+
+    def rotate_to_quaternion(self, target_quaternion, timeout=4.0):
+        """用角速度闭环把末端姿态转到目标四元数。"""
+        rate = rospy.Rate(40)
+        start = rospy.get_time()
+        target_r = R.from_quat([
+            target_quaternion.x,
+            target_quaternion.y,
+            target_quaternion.z,
+            target_quaternion.w,
+        ])
+        while not rospy.is_shutdown() and (rospy.get_time() - start) < timeout:
+            current_r = R.from_quat([
+                self.current_quaternion.x,
+                self.current_quaternion.y,
+                self.current_quaternion.z,
+                self.current_quaternion.w,
+            ])
+            err_r = target_r * current_r.inv()
+            rotvec = err_r.as_rotvec()
+            err_norm = float(np.linalg.norm(rotvec))
+            if err_norm < 0.03:
+                break
+
+            cmd = TwistCommand()
+            cmd.reference_frame = 3
+            cmd.twist.linear_x = 0.0
+            cmd.twist.linear_y = 0.0
+            cmd.twist.linear_z = 0.0
+            cmd.twist.angular_x = float(np.clip(2.0 * rotvec[0], -0.35, 0.35))
+            cmd.twist.angular_y = float(np.clip(2.0 * rotvec[1], -0.35, 0.35))
+            cmd.twist.angular_z = float(np.clip(2.0 * rotvec[2], -0.35, 0.35))
+            self.vel_pub.publish(cmd)
+            rate.sleep()
+
+        stop_cmd = TwistCommand()
+        stop_cmd.reference_frame = 3
+        for _ in range(6):
+            self.vel_pub.publish(stop_cmd)
+            rospy.sleep(0.01)
 
     def perform_plane_scan_at_pose(self, base_pose, scan_radius=0.01, num_samples=5, down_speed=0.004, contact_threshold=4.0, timeout=2.0):
         """
@@ -146,16 +229,8 @@ class SideContactDrawerPlane:
         for off in samples:
             target_x = base_pose.position.x + off[0]
             target_z = base_pose.position.z + off[2]
-            # 快速移动到探测位置的悬空点（保持 y 与 base 相同，沿法向用预留高度）
-            # 这里使用 MoveIt 设置位置（只位置），保留当前姿态
-            target_pose = self.move_group.get_current_pose().pose
-            target_pose.position.x = target_x
-            target_pose.position.y = base_pose.position.y + 0.005  # 5mm above
-            target_pose.position.z = target_z
-            self.move_group.set_pose_target(target_pose)
-            self.move_group.go(wait=True)
-            self.move_group.stop()
-            self.move_group.clear_pose_targets()
+            # 快速移动到探测位置的悬空点（不经过 MoveIt）
+            self.move_to_cartesian_target(target_x, base_pose.position.y + 0.005, target_z)
 
             # 轻柔向下探测直到接触或超时
             down_cmd = TwistCommand(); down_cmd.reference_frame = 3
@@ -230,12 +305,8 @@ class SideContactDrawerPlane:
                     rospy.logwarn(f"拟合过大偏差: angle={angle:.1f}°, rms={rms:.4f}m — 跳过姿态调整")
                 else:
                     q = get_orientation_for_normal(normal[0], normal[1], normal[2])
-                    current_pose = self.move_group.get_current_pose().pose
-                    current_pose.orientation = q
-                    self.move_group.set_pose_target(current_pose)
-                    self.move_group.go(wait=True)
-                    self.move_group.stop()
-                    self.move_group.clear_pose_targets()
+                    rospy.loginfo(f"目标姿态四元数: [{q.x:.3f}, {q.y:.3f}, {q.z:.3f}, {q.w:.3f}]")
+                    self.rotate_to_quaternion(q)
                     rospy.loginfo("✅ 已调整末端姿态以对齐拟合平面法线")
                 strokes_done.add(wp['stroke_id'])
 
@@ -249,8 +320,8 @@ class SideContactDrawerPlane:
         rospy.sleep(1.0)
         while not self.calibrated and not rospy.is_shutdown():
             rospy.sleep(0.05)
-        # 直接调用原始简单下探：这里我们模拟为返回当前 pose
-        pose = self.move_group.get_current_pose().pose
+        # 直接调用缓存位姿，避免依赖 MoveIt 的实时 robot state
+        pose = self.get_cached_pose()
         return pose
 
 if __name__ == '__main__':
