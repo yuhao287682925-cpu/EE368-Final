@@ -237,13 +237,12 @@ class AutoContactDrawer:
                 
             # 起步的 1.5 秒内盲跑（屏蔽判定），避开加速瞬间的爆表电流
             if loop_cnt > 60:
-                # 动态减速机制 (阻抗控制)
-                if current_net_fz > 2.0:
-                    speed_factor = max(0.0, (10.0 - current_net_fz) / 8.0)
-                    down_speed = -0.005 * speed_factor
-                else:
-                    down_speed = -0.005
-                    
+                # 关键修复：完全移除动态减速机制！
+                # 之前只要 force > 2.0 就会减速，而减速会产生极大的惯性力，导致 force 进一步飙升，
+                # 形成“减速->力变大->更减速->力爆表”的正反馈死锁，从而在半空中产生假接触！
+                # 现在强制保持恒速下探，彻底切断正反馈！
+                down_speed = -0.005
+                
                 if len(recent_forces) >= verify_size and all(f >= 10.0 for f in recent_forces):
                     rospy.loginfo(f"🟢 判定触及桌面纸板！接触力: {current_net_fz:.2f} N")
                     for _ in range(5):
