@@ -372,21 +372,37 @@ class AutoContactDrawer:
                 dy = target_y - self.current_y
                 dist_to_target = math.hypot(dx, dy)
                 
-                if dist_to_target < 0.003: # 允许误差 3mm
+                if dist_to_target < 0.001: # 允许误差极大幅度缩小至 1mm，必须走到当前点才允许下一个点
                     break
                     
-                # 1. 速度观测与运动学防卡死检测
+                # 1. 速度生成与运动学防卡死检测
                 movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
                 actual_speed = movement / dt if dt > 0 else 0.0
                 
-                cmd_vx = np.clip(k_pos * dx, -0.04, 0.04)
-                cmd_vy = np.clip(k_pos * dy, -0.04, 0.04)
+                # 【全功率恒速推土机】计算
+                max_speed = 0.035  # 巡航限速 35mm/s
+                k_pos_near = 6.0   # 靠近目标点时的高刚度收敛系数
+                
+                cmd_vx_raw = k_pos_near * dx
+                cmd_vy_raw = k_pos_near * dy
+                v_mag = math.hypot(cmd_vx_raw, cmd_vy_raw)
+                
+                if v_mag > max_speed:
+                    # 距离较远，处于恒速推土机模式 (饱和截断以维持直线方向)
+                    scale = max_speed / v_mag
+                    cmd_vx = cmd_vx_raw * scale
+                    cmd_vy = cmd_vy_raw * scale
+                else:
+                    # 距离极近 (<5mm左右)，转为高刚度P控制，确保精准收敛至 1mm 不抖动
+                    cmd_vx = cmd_vx_raw
+                    cmd_vy = cmd_vy_raw
+                    
                 expected_speed = math.hypot(cmd_vx, cmd_vy)
                 
                 if wp['phase'] in ['draw', 'touch_down']:
-                    # 只在距离目标点较远、下发了较快速度，且不在冷却期时进行检测
-                    if dist_to_target > 0.005 and relief_cooldown == 0 and expected_speed > 0.005:
-                        # 实际速度不到指令速度的 30%，或者实际速度极小 (<2mm/s)，说明被物理阻挡了
+                    # 只要预期下发速度大于 5mm/s 且不在抬升冷却期，就启用防戳破卡死检测
+                    if expected_speed > 0.005 and relief_cooldown == 0:
+                        # 实际速度不到指令速度的 30%，或者实际速度极小 (<2mm/s)，说明撞到了凹坑壁
                         if actual_speed < 0.3 * expected_speed or actual_speed < 0.002:
                             stuck_cnt += 1
                         else:
@@ -442,7 +458,7 @@ class AutoContactDrawer:
                     cmd.twist.linear_x = cmd_vx
                     cmd.twist.linear_y = cmd_vy
                     
-                cmd.twist.linear_z = np.clip(k_pos * dz, -0.04, 0.04)
+                cmd.twist.linear_z = np.clip(2.0 * dz, -0.04, 0.04)
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
                 cmd.twist.angular_z = 0.0
