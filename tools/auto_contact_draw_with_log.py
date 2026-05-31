@@ -257,6 +257,8 @@ class AutoContactDrawer:
                     
             self.send_cartesian_velocity(0.0, 0.0, down_speed)
             rate.sleep()
+            
+        if contact_detected:
             rospy.sleep(0.5) # 等待彻底静止
             
             # 使用高精度底层正运动学估算的绝对坐标 (防止 MoveIt 获取超时)
