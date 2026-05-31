@@ -18,7 +18,7 @@ if parent_dir not in sys.path:
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-from jacobian import NLinkArm
+from dynamics_ros1 import NLinkArm
 from scipy.spatial.transform import Rotation as R
 
 def get_orientation_for_normal(nx, ny, nz, default_rpy_deg=(0.0, 180.0, 0.0)):
@@ -57,13 +57,19 @@ class AutoContactDrawer:
         rospy.init_node('auto_contact_draw', anonymous=True)
         
         # 初始化 Gen3-lite DH 模型
-        dh_params_list = np.array([[0, 0, 243.3/1000, 0],
-                                   [math.pi/2, 0, 10/1000, 0+math.pi/2],
-                                   [math.pi, 280/1000, 0, 0+math.pi/2],
+        dh_params_list = np.array([[0, 0, 243.25/1000, 0],
+                                   [math.pi/2, 0, 30/1000, 0+math.pi/2],
+                                   [math.pi, 280/1000, 20/1000, 0+math.pi/2],
                                    [math.pi/2, 0, 245/1000, 0+math.pi/2],
                                    [math.pi/2, 0, 57/1000, 0],
                                    [-math.pi/2, 0, 235/1000, 0-math.pi/2]])
         self.arm_model = NLinkArm(dh_params_list)
+        self.arm_model.link_list[0].set_inertial_parameters(0.95974404, [2.477E-05, 0.02213531, 0.09937686], [0.00165947, 2e-08, 3.6E-07, 0.00140355, 0.00034927, 0.00089493], np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, -115/1000], [0, 0, 0, 1]]))
+        self.arm_model.link_list[1].set_inertial_parameters(1.17756164, [0.02998299, 0.21154808, 0.0453031], [0.01149277, 1E-06, 1.6E-07, 0.00102851, 0.00140765, 0.01133492], np.array([[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]))
+        self.arm_model.link_list[2].set_inertial_parameters(0.59767669, [0.0301559, 0.09502206, 0.0073555], [0.00163256, 7.11E-06, 1.54E-06, 0.00029798, 9.587E-05, 0.00169091], np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, -20/1000], [0, 0, 0, 1]]))
+        self.arm_model.link_list[3].set_inertial_parameters(0.52693412, [0.00575149, 0.01000443, 0.08719207], [0.00069098, 2.4E-07, 0.00016483, 0.00078519, 7.4E-07, 0.00034115], np.array([[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, -105/1000], [0, 0, 0, 1]]))
+        self.arm_model.link_list[4].set_inertial_parameters(0.58097325, [0.08056517, 0.00980409, 0.01872799], [0.00021268, 5.21E-06, 2.91E-06, 0.00106371, 1.1E-07, 0.00108465], np.array([[0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 1, -28.5/1000], [0, 0, 0, 1]]))
+        self.arm_model.link_list[5].set_inertial_parameters(0.2018, [0.00993, 0.00995, 0.06136], [0.0003428, 0.00000019, 0.0000001, 0.00028915, 0.00000027, 0.00013076], np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, -130/1000], [0, 0, 0, 1]]))
         
         # 接触状态机初始化
         self.state = FREE_SPACE
@@ -100,6 +106,9 @@ class AutoContactDrawer:
         self.current_y = 0.0
         self.current_z = 0.0
         
+        self.last_velocities = [0,0,0,0,0,0]
+        self.last_time = rospy.get_time()
+        
         # 订阅关节状态话题以实时进行力矩估计与位姿解算
         rospy.Subscriber("/my_gen3_lite/joint_states", JointState, self.joint_states_callback)
         
@@ -107,6 +116,7 @@ class AutoContactDrawer:
         self.vel_pub = rospy.Publisher("/my_gen3_lite/in/joint_velocity", Base_JointSpeeds, queue_size=1)
         self.force_fz_pub = rospy.Publisher("/force_control/auto/estimated_fz", Float64, queue_size=1)
         self.z_offset_pub = rospy.Publisher("/force_control/auto/z_offset", Float64, queue_size=1)
+        self.cmd_vz_pub = rospy.Publisher("/force_control/cmd_vz", Float64, queue_size=1)
         
         # MoveIt 控制器接口
         import moveit_commander
@@ -135,9 +145,18 @@ class AutoContactDrawer:
         self.current_y = tool_pose[1]
         self.current_z = tool_pose[2]
             
+        dt = rospy.get_time() - self.last_time
+        if dt <= 0: dt = 0.001
+        self.last_time = rospy.get_time()
+        thetas_dd = np.subtract(velocities, self.last_velocities) / dt
+        self.last_velocities = velocities
+        
+        sim_torque = self.arm_model.get_torque(thetas, velocities, thetas_dd, [0,0,0], [0,0,0])
+        ext_torque = np.subtract(torques, sim_torque)
+        
         # 2. 求解基础雅可比矩阵并计算估计力
         J = self.arm_model.basic_jacobian(thetas)
-        tool_force = np.linalg.pinv(J.T).dot(torques)
+        tool_force = np.linalg.pinv(J.T).dot(ext_torque)
         raw_fz = tool_force[2]
         self.raw_fz = raw_fz  # 保存为实例变量，供其他函数调用
         
@@ -237,23 +256,18 @@ class AutoContactDrawer:
                 
             # 起步的 1.5 秒内盲跑（屏蔽判定），避开加速瞬间的爆表电流
             if loop_cnt > 60:
-                # 一维阻抗软着陆
-                speed_factor = max(0.0, (10.0 - current_net_fz) / 8.0)
-                down_speed = -0.005 * speed_factor
-                
-                if len(recent_forces) >= verify_size and all(f >= 10.0 for f in recent_forces):
+                if current_net_fz >= 6.0:
                     rospy.loginfo(f"🟢 判定触及桌面纸板！接触力: {current_net_fz:.2f} N")
                     for _ in range(5):
                         self.send_cartesian_velocity(0.0, 0.0, 0.0)
+                        self.cmd_vz_pub.publish(Float64(0.0))
                         rospy.sleep(0.01)
                     contact_detected = True
                     break
             else:
-                down_speed = -0.005
-                if loop_cnt % 15 == 0:
-                    rospy.loginfo("⏳ 启动加速平稳期，屏蔽接触判定...")
+                self.send_cartesian_velocity(0.0, 0.0, -0.005)
+                self.cmd_vz_pub.publish(Float64(-0.005))
                     
-            self.send_cartesian_velocity(0.0, 0.0, down_speed)
             rate.sleep()
             
         if contact_detected:
@@ -376,6 +390,35 @@ class AutoContactDrawer:
         rate = rospy.Rate(40) # 40Hz
         dt = 0.025
         
+        stuck_cnt = 0
+        relief_cooldown = 0
+        z_offset_relief = 0.0
+        macro_z_shift = 0.0
+        prev_servo_x = self.current_x
+        prev_servo_y = self.current_y
+        actual_log = []
+        
+        # 简单比例增益控制水平趋近
+        k_pos_near = 20.0
+        max_speed = 0.05
+        
+        for i, wp in enumerate(aligned_waypoints):
+            if rospy.is_shutdown(): break
+            
+            while not rospy.is_shutdown():
+                dx = wp['x'] - self.current_x
+                dy = wp['y'] - self.current_y
+                dist = math.hypot(dx, dy)
+                
+                # 记录轨迹
+                actual_log.append({'x': self.current_x, 'y': self.current_y, 'z': self.current_z})
+                
+                # 到位判定 (收敛至 0.8mm)
+                if dist < 0.0008:
+                    break
+                    
+                actual_speed = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y) / dt
+                
                 cmd_vx_raw = k_pos_near * dx
                 cmd_vy_raw = k_pos_near * dy
                 v_mag = math.hypot(cmd_vx_raw, cmd_vy_raw)
@@ -393,82 +436,19 @@ class AutoContactDrawer:
                 expected_speed = math.hypot(cmd_vx, cmd_vy)
                 
                 if wp['phase'] in ['draw', 'touch_down']:
-                    # 只要预期下发速度大于 5mm/s 且不在抬升冷却期，就启用防戳破卡死检测
-                    if expected_speed > 0.003 and relief_cooldown == 0:
-                        # 恢复瞬时重置机制，过滤掉由于电机刚启动/转向时的加速度迟滞导致的“假受阻”
-                        if actual_speed < 0.3 * expected_speed or actual_speed < 0.002:
-                            stuck_cnt += 1
-                        else:
-                            stuck_cnt = 0
-                    else:
-                        stuck_cnt = 0
+                    K_force = 0.002
+                    force_error = 6.0 - self.raw_fz
+                    cmd_vz = force_error * (-K_force)
+                    cmd_vz = np.clip(cmd_vz, -0.015, 0.015)
                 else:
-                    stuck_cnt = 0
-                    
-                prev_servo_x = self.current_x
-                prev_servo_y = self.current_y
+                    target_z = wp['z_nominal'] + 0.015
+                    dz = target_z - self.current_z
+                    cmd_vz = np.clip(4.0 * dz, -0.05, 0.05)
                 
-                # 2. 状态机转移逻辑
-                if wp['phase'] in ['draw', 'touch_down']:
-                    if stuck_cnt > 8: # 必须连续卡死 8 帧 (0.2秒)，确保是真的陷入了坑洼，而不是在加速
-                        z_offset_relief += 0.0035 # 考虑到笔尖形变缓冲，大幅拔高 3.5mm 以确保笔尖完全脱离障碍物
-                        z_offset_relief = min(z_offset_relief, 0.015) # 最大允许拔高 15mm
-                        
-                        macro_z_shift += 0.0004
-                        
-                        relief_cooldown = 10 # 停滞 10 帧 (0.25秒)，确保有时间完成物理拔出
-                        stuck_cnt = 0
-                        rospy.logwarn(f"⚠️ 物理受阻 (Act/Exp={actual_speed:.3f}/{expected_speed:.3f})！瞬发退缩且基准抬升 -> {macro_z_shift:.4f}m")
-                else:
-                    # 提笔移动阶段，清空状态
-                    z_offset_relief = 0.0
-                    relief_cooldown = 0
-                    stuck_cnt = 0
-                
-                # 3. 目标高度计算
-                # 关键修复：既然 10N 探面时纸箱已被深深压陷，这里设为负值(-0.001)，等于基准向上抬高 1mm！大幅释放压力！
-                fixed_press_depth = -0.001 
-                if wp['phase'] in ['draw', 'touch_down']:
-                    target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief + macro_z_shift
-                else:
-                    target_z = wp['z_nominal'] + 0.015 + macro_z_shift
-                    
-                dz = target_z - self.current_z
-                
-                # 4. 指令生成与状态执行
-                if relief_cooldown > 0:
-                    relief_cooldown -= 1
-                    # 停滞状态下，强制水平静止
-                    cmd_vx = 0.0
-                    cmd_vy = 0.0
-                    # 停滞状态依然允许极速向上
-                else:
-                    # 正常移动，并极速下压恢复接触 (5mm/s平滑下落)
-                    if wp['phase'] in ['draw', 'touch_down']:
-                        z_offset_relief -= 0.005 * dt
-                        z_offset_relief = max(0.0, z_offset_relief)
-                        
-                        if z_offset_relief < 0.0001:
-                            macro_z_shift -= 0.0001 * dt
-                        
-                # Z轴改为“动态非对称刚度”：兼顾起步轻柔防戳与避障极速恢复
-                if dz > 0:
-                    # 需要向上抬升 (拔出)
-                    cmd_vz = np.clip(8.0 * dz, 0.0, 0.05) # 极速拔出，最高 50mm/s
-                else:
-                    # 需要向下压入 (下探与恢复)
-                    if z_offset_relief > 0.0001:
-                        # 正在进行避障后的恢复下压，允许高速猛扎以防断墨太长
-                        cmd_vz = np.clip(4.0 * dz, -0.04, 0.0) # 快速恢复，最高 40mm/s
-                    else:
-                        # 正常起步贴合纸面，轻柔慢压防止戳破纸箱
-                        cmd_vz = np.clip(1.0 * dz, -0.01, 0.0) # 轻柔贴合，最高 10mm/s
-                
-                # 直接通过自研关节速度映射下发到底层
                 self.send_cartesian_velocity(cmd_vx, cmd_vy, cmd_vz)
-                rate.sleep()
-                
-            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 位移状态: {actual_speed:.3f}/{expected_speed:.3f} | Relief: {z_offset_relief:.4f}m")
+                self.cmd_vz_pub.publish(Float64(cmd_vz))
+                rate.sleep() 
+            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 位移状态: {actual_speed:.3f}/{expected_speed:.3f}")
             
         # 5. 绘制结束，到达终点后稍作停顿，平息机械臂末端抖动
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
