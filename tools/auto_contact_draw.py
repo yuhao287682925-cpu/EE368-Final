@@ -235,23 +235,23 @@ class AutoContactDrawer:
             rate.sleep()
         
         if contact_detected:
-            rospy.loginfo("⬆️ 执行就近重力校准：抬升 10mm 脱离接触...")
+            rospy.loginfo("⬆️ 执行就近重力校准：微抬 3mm 脱离接触...")
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
-            lift_cmd.twist.linear_z = 0.015 # 15mm/s 抬升
-            for _ in range(30): # 抬升约 0.75秒，即 11mm
+            lift_cmd.twist.linear_z = 0.010 # 10mm/s 抬升
+            for _ in range(12): # 抬升约 0.3秒，即 3mm
                 self.vel_pub.publish(lift_cmd)
                 rospy.sleep(0.025)
             
-            for _ in range(10):
+            for _ in range(5):
                 self.vel_pub.publish(stop_cmd)
                 rospy.sleep(0.025)
                 
-            rospy.loginfo("⏸️ 重新执行高精度就近零点校准 (1.5秒)...")
+            rospy.loginfo("⏸️ 重新执行高精度就近零点校准 (0.8秒)...")
             self.calibrated = False
             self.calibration_samples = []
             self.torque_calibration_samples = []
-            rospy.sleep(1.5)
+            rospy.sleep(0.8)
             
             while not self.calibrated and not rospy.is_shutdown():
                 rospy.sleep(0.1)
@@ -419,7 +419,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 0.8  # XY运动刚度
+            k_pos = 3.5  # 大幅提高XY运动刚度，加快收敛速度
             
             # === 阶段 1：水平盲走 (锁定 Z) ===
             while not rospy.is_shutdown():
@@ -427,20 +427,26 @@ class AutoContactDrawer:
                 dy = target_y - self.current_y
                 
                 dist_to_target = math.hypot(dx, dy)
-                if dist_to_target < 0.001:
+                if dist_to_target < 0.0015: # 放宽一点点精度要求，避免尾部无限减速爬行
                     break # 水平到位
                 
                 cmd = TwistCommand()
                 cmd.reference_frame = 3
                 
-                cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
-                cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
+                # 增加最小死区速度(8mm/s)，防止最后阶段如蜗牛爬行
+                v_x = k_pos * dx
+                v_y = k_pos * dy
+                if 0 < abs(v_x) < 0.008 and dist_to_target > 0.0015: v_x = math.copysign(0.008, v_x)
+                if 0 < abs(v_y) < 0.008 and dist_to_target > 0.0015: v_y = math.copysign(0.008, v_y)
+                
+                cmd.twist.linear_x = np.clip(v_x, -0.04, 0.04)
+                cmd.twist.linear_y = np.clip(v_y, -0.04, 0.04)
                 
                 if phase not in ['draw', 'touch_down']:
-                    # 抬笔移动时，向目标高度移动
+                    # 抬笔移动时，向目标高度移动，提速
                     target_z_nominal = wp['z_nominal']
                     dz_nominal = target_z_nominal - self.current_z
-                    cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.015, 0.015)
+                    cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.025, 0.025)
                     
                     # 明显抬升时，强制锁死 X/Y 速度
                     if dz_nominal > 0.002:
@@ -457,22 +463,22 @@ class AutoContactDrawer:
                 self.vel_pub.publish(cmd)
                 rate.sleep()
                 
-            # === 阶段 2：刹车静止 ===
-            stop_cmd = TwistCommand()
-            stop_cmd.reference_frame = 3
-            for _ in range(3): # 停顿约 0.075 秒，等待电机摩擦力耗散
+            # 为了大幅提速：只有每隔 2 个点，或者落笔的第一下，才做费时的静止测力微调
+            if phase in ['draw', 'touch_down'] and (i % 2 == 0 or phase == 'touch_down'):
+                # === 阶段 2：刹车静止 (缩短为只需 1 个循环 25ms 即可耗散大部分动态摩擦) ===
+                stop_cmd = TwistCommand()
+                stop_cmd.reference_frame = 3
                 self.vel_pub.publish(stop_cmd)
                 rospy.sleep(0.025)
                 
-            # === 阶段 3：静止测力与微调 ===
-            if phase in ['draw', 'touch_down']:
+                # === 阶段 3：静止测力与微调 ===
                 adjust_cnt = 0
                 while not rospy.is_shutdown():
                     adjust_cnt += 1
                     static_fz = self.current_fz
                     
-                    if 4.0 <= static_fz <= 6.5:
-                        # 压力在完美区间，停止调整
+                    # 放宽完美区间到 3.5N ~ 7.0N，减少陷入反复调整的概率
+                    if 3.5 <= static_fz <= 7.0:
                         break
                         
                     adjust_cmd = TwistCommand()
@@ -480,17 +486,17 @@ class AutoContactDrawer:
                     adjust_cmd.twist.linear_x = 0.0
                     adjust_cmd.twist.linear_y = 0.0
                     
-                    if static_fz < 4.0:
-                        # 受力不足，轻微下探
-                        adjust_cmd.twist.linear_z = -0.001
-                    elif static_fz > 6.5:
-                        # 受力过大，明显抬起
-                        adjust_cmd.twist.linear_z = 0.003
+                    if static_fz < 3.5:
+                        # 受力不足，轻微下探 (提速)
+                        adjust_cmd.twist.linear_z = -0.002
+                    elif static_fz > 7.0:
+                        # 受力过大，明显抬起 (提速)
+                        adjust_cmd.twist.linear_z = 0.005
                         
                     self.vel_pub.publish(adjust_cmd)
                     rate.sleep()
                     
-                    if adjust_cnt > 12: # 最多微调约 0.3秒，防止卡死
+                    if adjust_cnt > 6: # 最多微调 0.15秒，极速跳出防止卡死
                         break
                 
                 # 微调结束后彻底停住 Z
