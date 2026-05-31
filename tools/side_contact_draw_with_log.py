@@ -319,21 +319,21 @@ class SideContactDrawer:
             self.send_cartesian_velocity(0.0, 0.0, 0.0)
             rospy.sleep(0.01)
             
-        with open('actual_executed_trajectory.csv', 'w', newline='') as f:
+        with open('side_actual_executed_trajectory.csv', 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
             writer.writeheader()
             writer.writerows(actual_log)
-        with open('theo_mapped_trajectory.csv', 'w', newline='') as f:
+        with open('side_theo_mapped_trajectory.csv', 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
             writer.writeheader()
             writer.writerows(theo_log)
             
-        rospy.loginfo("📊 轨迹日志已保存至 actual_executed_trajectory.csv 和 theo_mapped_trajectory.csv")
+        rospy.loginfo("📊 轨迹日志已保存至 side_actual_executed_trajectory.csv 和 side_theo_mapped_trajectory.csv")
         rospy.loginfo("🎉 -Y 轴侧面绘制任务圆满完成！")
         
         try:
             import subprocess
-            subprocess.Popen(["python3", "tools/analyze_error.py", "--actual", "actual_executed_trajectory.csv", "--theo", "theo_mapped_trajectory.csv"])
+            subprocess.Popen(["python3", "tools/analyze_error.py", "--actual", "side_actual_executed_trajectory.csv", "--theo", "side_theo_mapped_trajectory.csv"])
         except Exception as e:
             rospy.logerr(f"启动自动分析失败: {e}")
 
