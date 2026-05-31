@@ -480,14 +480,14 @@ class AutoContactDrawer:
                 
                 static_fz = self.current_fz
                 
-                # 辅助力控：微量调整 z_offset，上限收紧到仅 +0.3mm，防止明显抬升
-                if static_fz > 5.5:
-                    self.z_offset += 0.0002  # 压力偏大，极小幅微抬 0.2mm
+                # 辅助力控：微量调整 z_offset
+                if static_fz > 5.0:
+                    self.z_offset += 0.0004  # 压力偏大，微抬 0.4mm，加快释压避免卡死
                 elif static_fz < 2.5:
                     self.z_offset -= 0.0010  # 压力偏小（悬空风险），快速下压 1.0mm
                     
-                # 上限 +0.3mm：允许轻微释压，但不能明显悬空；下限 -10mm：应对纸箱塌陷
-                self.z_offset = np.clip(self.z_offset, -0.010, 0.0003)
+                # 上限 +0.8mm：居中，能决流卡阻又不至于明显悬空；下限 -10mm：应对纸箱塌陷
+                self.z_offset = np.clip(self.z_offset, -0.010, 0.0008)
                 
             if i % 5 == 0 or i == len(aligned_waypoints) - 1:
                 rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fz: {self.current_fz:.2f}N | 高度 Z: {self.current_z:.4f}m")
