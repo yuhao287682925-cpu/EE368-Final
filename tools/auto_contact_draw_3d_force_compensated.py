@@ -383,6 +383,9 @@ class ForcePaintingController:
         self.force_fz_pub.publish(Float64(self.current_fz))
         return self.current_fz
 
+    def joint_states_callback(self, msg):
+        return self._estimate_contact_from_joint_state(msg)
+
     def _touchdown(self):
         rospy.loginfo("🚀 Starting touchdown sequence...")
         self.state = FREE_SPACE
