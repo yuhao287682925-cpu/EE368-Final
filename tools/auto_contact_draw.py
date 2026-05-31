@@ -432,9 +432,9 @@ class AutoContactDrawer:
                 # 2. 状态机转移逻辑
                 if wp['phase'] in ['draw', 'touch_down']:
                     if stuck_cnt > 8: # 必须连续卡死 8 帧 (0.2秒)，确保是真的陷入了坑洼，而不是在加速
-                        z_offset_relief += 0.003 # 瞬间将目标高度猛力拔高 3mm
-                        z_offset_relief = min(z_offset_relief, 0.015) # 最大允许拔高 15mm
-                        relief_cooldown = 15 # 进入停滞状态 15 帧 (0.375秒)
+                        z_offset_relief += 0.0015 # 微调拔高 1.5mm (减小跳笔幅度)
+                        z_offset_relief = min(z_offset_relief, 0.010) # 最大允许拔高 10mm
+                        relief_cooldown = 6 # 极短停滞 6 帧 (0.15秒)，让笔尖快速越过坑洼边缘即可
                         stuck_cnt = 0
                         rospy.logwarn(f"⚠️ 物理受阻 (Actual/Exp={actual_speed:.3f}/{expected_speed:.3f})，触发盲探极速抬笔！")
                 else:
@@ -464,9 +464,9 @@ class AutoContactDrawer:
                     cmd.twist.linear_y = 0.0
                     # 停滞状态依然允许极速向上
                 else:
-                    # 正常移动，并快速下压恢复接触 (15mm/s，防止长时间在半空画画)
+                    # 正常移动，并极速下压恢复接触 (25mm/s，把断墨距离压缩到最短)
                     if wp['phase'] in ['draw', 'touch_down']:
-                        z_offset_relief -= 0.015 * dt
+                        z_offset_relief -= 0.025 * dt
                         z_offset_relief = max(0.0, z_offset_relief)
                         
                     cmd.twist.linear_x = cmd_vx
