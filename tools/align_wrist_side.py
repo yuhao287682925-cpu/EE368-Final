@@ -62,12 +62,12 @@ class WristAlignerSide:
         stable_count = 0     
         align_success = False
         
-        rospy.loginfo("🔄 开始自适应侧面对齐 (仅对齐笔尖至 -Y 轴，允许自然偏移)...")
+        rospy.loginfo("🔄 开始自适应侧面对齐 (仅对齐笔尖至 +Y 轴，允许自然偏移)...")
         
         while not rospy.is_shutdown():
             # 1. 纯指向误差计算 (对应 θY 任意)
             v_curr = self.R_curr[:, 2] # 当前工具 Z 轴 (笔尖指向)
-            v_target = np.array([0.0, -1.0, 0.0]) # 目标指向 -Y 轴
+            v_target = np.array([0.0, 1.0, 0.0]) # 目标指向 +Y 轴
             
             dot = np.clip(np.dot(v_curr, v_target), -1.0, 1.0)
             angle = math.acos(dot)
@@ -126,8 +126,8 @@ class WristAlignerSide:
             rospy.sleep(0.005)
             
         if align_success:
-            rospy.loginfo("✅ 侧面姿态自动调直成功！笔尖现已直指 -Y 轴！")
-            rospy.loginfo("👉 提示：现在请将笔尖平移到纸板起点，然后运行 side_contact_draw.py 开始作画！")
+            rospy.loginfo("✅ 侧面姿态自动调直成功！笔尖现已直指 +Y 轴！")
+            rospy.loginfo("👉 提示：现在请将笔尖平移到纸板起点，然后运行 side_contact_draw_with_log.py 开始作画！")
         else:
             rospy.logerr("❌ 姿态调直超时或异常终止。")
 

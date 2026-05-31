@@ -190,7 +190,7 @@ class SideContactDrawer:
         
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 3 # 基座坐标系
-        down_cmd.twist.linear_y = -0.010 # -10mm/s 向下，放慢速度以配合更长的确认窗口
+        down_cmd.twist.linear_y = 0.010 # 10mm/s 向 +Y 下探
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
@@ -235,10 +235,10 @@ class SideContactDrawer:
             rate.sleep()
         
         if contact_detected:
-            rospy.loginfo("⬆️ 执行就近重力校准：微抬 3mm 脱离接触...")
+            rospy.loginfo("⬆️ 执行就近重力校准：微抬 5mm 脱离接触...")
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
-            lift_cmd.twist.linear_y = 0.010 # 10mm/s 抬升
+            lift_cmd.twist.linear_y = -0.010 # -10mm/s 抬升 (向 -Y 退回)
             for _ in range(20): # 抬升约 0.5秒，即 5mm
                 self.vel_pub.publish(lift_cmd)
                 rospy.sleep(0.025)
@@ -256,8 +256,8 @@ class SideContactDrawer:
             while not self.calibrated and not rospy.is_shutdown():
                 rospy.sleep(0.1)
                 
-            rospy.loginfo("⬇️ 二次轻柔下探...")
-            down_cmd.twist.linear_y = -0.003 # 极慢速下探 3mm/s，防止第一下过深
+            rospy.loginfo("⬇️ 二次轻柔下探 (+Y)...")
+            down_cmd.twist.linear_y = 0.003 # 极慢速下探 3mm/s，防止第一下过深
             recent_forces.clear()
             contact_detected_again = False
             loop_cnt = 0
@@ -488,14 +488,14 @@ class SideContactDrawer:
                 
                 static_fz = self.current_fy
                 
-                # 辅助力控：微量调整 y_offset
+                # 辅助力控：微量调整 y_offset (对于 +Y 法向：减小 y_offset 会向 -Y 退让，增加会向 +Y 深入)
                 if static_fz > 5.0:
-                    self.y_offset += 0.0004  # 压力偏大，微抬 0.4mm，加快释压避免卡死
+                    self.y_offset -= 0.0004  # 压力偏大，退让 0.4mm 释压避免卡死
                 elif static_fz < 2.5:
-                    self.y_offset -= 0.0010  # 压力偏小（悬空风险），快速下压 1.0mm
+                    self.y_offset += 0.0010  # 压力偏小（悬空风险），深入 1.0mm
                     
-                # 上限 +0.8mm：居中，能决流卡阻又不至于明显悬空；下限 -10mm：应对纸箱塌陷
-                self.y_offset = np.clip(self.y_offset, -0.010, 0.0008)
+                # 下限 -0.8mm：退让上限；上限 +10mm：深入塌陷区
+                self.y_offset = np.clip(self.y_offset, -0.0008, 0.010)
                 
             if i % 5 == 0 or i == len(aligned_waypoints) - 1:
                 rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fy: {self.current_fy:.2f}N | 深度 Y: {self.current_z:.4f}m")
@@ -522,8 +522,8 @@ class SideContactDrawer:
         lift_cmd.twist.angular_z = 0.0
         
         # 严格执行用户要求：采用多段控制来进行抬升
-        # 分三段加速抬升，平滑脱离
-        for speed in [0.005, 0.015, 0.030]:
+        # 分三段加速拔出 (向 -Y 退回)
+        for speed in [-0.005, -0.015, -0.030]:
             lift_cmd.twist.linear_y = speed
             for _ in range(15):
                 if rospy.is_shutdown():
