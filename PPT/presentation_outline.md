@@ -40,33 +40,36 @@ raw_fz = tool_force[2]
 self.current_fz = abs(raw_fz - self.fz_bias)
 ```
 
-## Slide 4: 顶面绘制与悬空预演去皮算法 (Top-Down Drawing & Air-Tracing Tare)
+## Slide 4: 顶面绘制与底层关节刚性伺服 (Top-Down Drawing & Joint Velocity Control)
 - **主要文件**: `tools/auto_contact_draw.py`
-- **核心痛点**: 机械臂在大范围伸展运动时，自重与姿态变化会导致极大的“虚假受力漂移”，使得传统的绝对阈值力控完全失效。
-- **创新解决方案**: 采用**悬空预演去皮法 (Air-Tracing Tare)**。正式下笔前，在轨迹正上方 10mm 处预跑“空挥”一次，记录纯姿态力矩偏差；实画时实时扣除基准，提取绝对纯净的真实物理接触力 (`fz_pure`)。
+- **核心痛点**: 机械臂自带的笛卡尔控制器 (Cartesian Twist) 会在接近障碍时因为内部的安全限位或姿态奇异导致不明原因的减速和卡阻，形成假阳性“卡死”。并且力控受到运动中的动摩擦力干扰，极易正反馈“飞天”。
+- **创新解决方案**: 彻底抛弃力控，拥抱**直接关节速度控制**与**运动学主动悬挂**。通过雅可比矩阵伪逆 ($J^{\dagger}$)，将笛卡尔空间速度完全映射为底层的六关节角速度下发。一旦机械臂末端失速，意味着 100% 发生了真正的物理碰撞！
 - **核心代码片段**:
 ```python
-# 提取基准漂移力并计算纯物理挤压力
-baseline_fz = air_fz_profile[i]
-fz_pure = max(0.0, fz_filtered - baseline_fz)
+# 伪逆解算目标关节速度并进行底层硬限幅
+J_pinv = np.linalg.pinv(J, rcond=1e-3)
+q_dot = J_pinv.dot(V_cart)
+
+# 绕过驱动器直接下发关节转速
+for j in range(6):
+    speed.joint_identifier = j
+    speed.value = np.clip(q_dot[j], -0.5, 0.5)
 ```
 
-## Slide 4.5: 提笔刹车防卡死机制 (Halt & Lift State Machine)
-- **核心思想**: 模拟人类画笔卡入坑洼时的本能反应——遇大阻力时立刻停止横向硬拽，专心往上抬笔脱困，避免机械臂卡死崩溃。
+## Slide 4.5: 运动学啄木鸟避障与一维软着陆 (Kinematic Woodpecker & Soft-Landing)
+- **核心思想**: 寻面时，利用感受到的接触力作为阻抗成比例放慢速度（蜻蜓点水）；绘制时，基于刚性伺服下的“失速”判定，遇微小坑洼瞬间拔高 3.5mm，如同主动悬挂般锯齿状贴合起伏表面。
 - **核心代码片段**:
 ```python
-# 状态机：遇大阻力或物理卡顿，立刻进入刹车抬升模式
-if fz_pure > 7.0 or stuck_cnt > 5:
-    in_relief_halt = True
-    z_offset_relief += 0.015 * dt # 15mm/s 极速向上拔出
+# 一维阻抗软着陆
+speed_factor = max(0.0, (10.0 - current_net_fz) / 8.0)
+down_speed = -0.005 * speed_factor
 
-# 动力切断：彻底停止平面强行拖拽，保护硬件
-if in_relief_halt:
-    cmd.twist.linear_x = 0.0
-    cmd.twist.linear_y = 0.0
-else:
-    cmd.twist.linear_x = np.clip(k_pos * dx, -0.02, 0.02)
-    cmd.twist.linear_y = np.clip(k_pos * dy, -0.02, 0.02)
+# 啄木鸟：物理受阻 (失速) 触发极速抬笔泄压
+if actual_speed < 0.25 * expected_speed:
+    stuck_cnt += 1
+    
+if stuck_cnt > 8: 
+    z_offset_relief += 0.0035 # 瞬时抬升 3.5mm 越过障碍
 ```
 
 ## Slide 5: 侧边绘制 - 姿态变换与逆向重映射 (Side-Wall Drawing)
