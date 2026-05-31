@@ -204,9 +204,11 @@ class AutoContactDrawer:
             loop_cnt += 1
             
             raw_f = self.raw_fz
-            # 只要当前受力小于 5.0N (认定为仍在悬空)，就让零点偏置缓慢跟随当前的原始受力，消除姿态变化带来的重力补偿漂移。
-            # 一旦受力超过 5.0N，说明可能碰到了纸箱，立刻停止更新偏置，准备触发 15N 停机！
-            if abs(raw_f - local_fz_bias) < 5.0 and loop_cnt > 60:
+            # 起步期强制跟随：起步的前 1.5 秒内，强制吸收电机启动电涌和初始姿态漂移
+            if loop_cnt < 60:
+                local_fz_bias = 0.90 * local_fz_bias + 0.10 * raw_f
+            # 平稳期条件跟随：只要净受力小于 5.0N，就缓慢更新消除慢速温漂；超过则锁定基准准备触发
+            elif abs(raw_f - local_fz_bias) < 5.0:
                 local_fz_bias = 0.98 * local_fz_bias + 0.02 * raw_f
                 
             current_net_fz = abs(raw_f - local_fz_bias)
