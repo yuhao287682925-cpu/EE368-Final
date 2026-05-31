@@ -448,10 +448,10 @@ class AutoContactDrawer:
                 # 2. 状态机转移逻辑
                 if wp['phase'] in ['draw', 'touch_down']:
                     if stuck_cnt > 8: # 必须连续卡死 8 帧 (0.2秒)，确保是真的陷入了坑洼，而不是在加速
-                        z_offset_relief += 0.0035 # 考虑到笔尖形变缓冲，大幅拔高 3.5mm 以确保笔尖完全脱离障碍物
+                        z_offset_relief += 0.0045 # 考虑到笔尖形变缓冲，大幅拔高 4.5mm 以确保笔尖完全脱离障碍物
                         z_offset_relief = min(z_offset_relief, 0.015) # 最大允许拔高 15mm
                         
-                        macro_z_shift += 0.0004
+                        macro_z_shift += 0.0006
                         
                         relief_cooldown = 10 # 停滞 10 帧 (0.25秒)，确保有时间完成物理拔出
                         stuck_cnt = 0
@@ -463,8 +463,8 @@ class AutoContactDrawer:
                     stuck_cnt = 0
                 
                 # 3. 目标高度计算
-                # 关键修复：既然 10N 探面时纸箱已被深深压陷，这里设为负值(-0.001)，等于基准向上抬高 1mm！大幅释放压力！
-                fixed_press_depth = -0.001 
+                # 关键修复：既然 10N 探面时纸箱已被深深压陷，这里设为负值(-0.0015)，等于基准向上抬高 1.5mm！大幅释放压力！
+                fixed_press_depth = -0.0015 
                 if wp['phase'] in ['draw', 'touch_down']:
                     target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief + macro_z_shift
                 else:
