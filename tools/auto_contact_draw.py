@@ -236,13 +236,13 @@ class AutoContactDrawer:
             if loop_cnt > 60:
                 # 动态减速机制 (阻抗控制)
                 if current_net_fz > 2.0:
-                    speed_factor = max(0.0, (8.0 - current_net_fz) / 6.0)
+                    speed_factor = max(0.0, (10.0 - current_net_fz) / 8.0)
                     down_speed = -0.005 * speed_factor
                 else:
                     down_speed = -0.005
                     
-                # 触发阈值从 10N 降低到 6N，防止顶面软纸箱被压塌
-                if len(recent_forces) >= verify_size and all(f >= 6.0 for f in recent_forces):
+                # 恢复 10N 阈值，彻底屏蔽空中误判
+                if len(recent_forces) >= verify_size and all(f >= 10.0 for f in recent_forces):
                     rospy.loginfo(f"🟢 判定触及桌面纸板！接触力: {current_net_fz:.2f} N")
                     for _ in range(5):
                         self.send_cartesian_velocity(0.0, 0.0, 0.0)
@@ -462,7 +462,8 @@ class AutoContactDrawer:
                     stuck_cnt = 0
                 
                 # 3. 目标高度计算
-                fixed_press_depth = 0.001  # 固定下压深度缩小至 1mm，纯运动学探面已极其精准
+                # 关键修复：既然 10N 探面时纸箱已被深深压陷，这里设为负值(-0.001)，等于基准向上抬高 1mm！大幅释放压力！
+                fixed_press_depth = -0.001 
                 if wp['phase'] in ['draw', 'touch_down']:
                     target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief + macro_z_shift
                 else:
