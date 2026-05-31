@@ -235,11 +235,11 @@ class AutoContactDrawer:
             rate.sleep()
         
         if contact_detected:
-            rospy.loginfo("⬆️ 执行就近重力校准：微抬 3mm 脱离接触...")
+            rospy.loginfo("⬆️ 执行就近重力校准：抬升 15mm 脱离接触...")
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
-            lift_cmd.twist.linear_z = 0.010 # 10mm/s 抬升
-            for _ in range(12): # 抬升约 0.3秒，即 3mm
+            lift_cmd.twist.linear_z = 0.015 # 15mm/s 抬升
+            for _ in range(40): # 抬升 1.0秒，即 15mm
                 self.vel_pub.publish(lift_cmd)
                 rospy.sleep(0.025)
             
@@ -247,11 +247,11 @@ class AutoContactDrawer:
                 self.vel_pub.publish(stop_cmd)
                 rospy.sleep(0.025)
                 
-            rospy.loginfo("⏸️ 重新执行高精度就近零点校准 (0.8秒)...")
+            rospy.loginfo("⏸️ 重新执行高精度就近零点校准 (1.5秒)...")
             self.calibrated = False
             self.calibration_samples = []
             self.torque_calibration_samples = []
-            rospy.sleep(0.8)
+            rospy.sleep(1.5)
             
             while not self.calibrated and not rospy.is_shutdown():
                 rospy.sleep(0.1)
@@ -419,22 +419,30 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            # 动态刚度：空中极速，落笔放缓（极大减轻对纸箱的拖拽平移，解决起点终点错位）
+            # 动态刚度：空中极速，落笔放缓
             k_pos = 1.5 if phase == 'draw' else 3.5
+            k_pos_z = 2.0  # 核心改动：Z轴使用距离/高度刚度控制
             
-            # === 阶段 1：水平盲走 (锁定 Z) ===
+            # === 阶段 1：以距离和高度为主控的平滑移动 ===
             while not rospy.is_shutdown():
                 dx = target_x - self.current_x
                 dy = target_y - self.current_y
                 
+                # 高度主控：计算绝对目标高度
+                if phase not in ['draw', 'touch_down']:
+                    target_z = wp['z_nominal']
+                else:
+                    target_z = wp['z_nominal'] + self.z_offset
+                    
+                dz = target_z - self.current_z
+                
                 dist_to_target = math.hypot(dx, dy)
-                if dist_to_target < 0.0015: # 放宽一点点精度要求，避免尾部无限减速爬行
-                    break # 水平到位
+                if dist_to_target < 0.0015: 
+                    break
                 
                 cmd = TwistCommand()
                 cmd.reference_frame = 3
                 
-                # 恢复安全的最小死区速度(8mm/s)
                 v_x = k_pos * dx
                 v_y = k_pos * dy
                 if 0 < abs(v_x) < 0.008 and dist_to_target > 0.0015: v_x = math.copysign(0.008, v_x)
@@ -443,19 +451,13 @@ class AutoContactDrawer:
                 cmd.twist.linear_x = np.clip(v_x, -0.04, 0.04)
                 cmd.twist.linear_y = np.clip(v_y, -0.04, 0.04)
                 
-                if phase not in ['draw', 'touch_down']:
-                    # 抬笔移动时，向目标高度移动，提速
-                    target_z_nominal = wp['z_nominal']
-                    dz_nominal = target_z_nominal - self.current_z
-                    cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.025, 0.025)
-                    
-                    # 明显抬升时，强制锁死 X/Y 速度
-                    if dz_nominal > 0.002:
-                        cmd.twist.linear_x = 0.0
-                        cmd.twist.linear_y = 0.0
-                else:
-                    # 绘制阶段：移动时锁定Z高度，绝对不产生额外下压，防止摩擦力伪装成受力
-                    cmd.twist.linear_z = 0.0
+                # Z轴以位置误差作为绝对主控
+                cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.025, 0.025)
+                
+                if phase not in ['draw', 'touch_down'] and dz > 0.002:
+                    # 抬笔移动时强制锁死水平方向，防划伤
+                    cmd.twist.linear_x = 0.0
+                    cmd.twist.linear_y = 0.0
                     
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
@@ -464,44 +466,23 @@ class AutoContactDrawer:
                 self.vel_pub.publish(cmd)
                 rate.sleep()
                 
-            # 为了大幅提速：只有每隔 2 个点，或者落笔的第一下，才做费时的静止测力微调
+            # === 阶段 2：刹车静止，并进行纯辅助性质的力控修正 ===
             if phase in ['draw', 'touch_down'] and (i % 2 == 0 or phase == 'touch_down'):
-                # === 阶段 2：刹车静止 (缩短为只需 1 个循环 25ms 即可耗散大部分动态摩擦) ===
                 stop_cmd = TwistCommand()
                 stop_cmd.reference_frame = 3
                 self.vel_pub.publish(stop_cmd)
                 rospy.sleep(0.025)
                 
-                # === 阶段 3：静止测力与微调 ===
-                adjust_cnt = 0
-                while not rospy.is_shutdown():
-                    adjust_cnt += 1
-                    static_fz = self.current_fz
-                    
-                    # 设定抗噪底线安全区：2.5N ~ 5.5N
-                    if 2.5 <= static_fz <= 5.5:
-                        break
-                        
-                    adjust_cmd = TwistCommand()
-                    adjust_cmd.reference_frame = 3
-                    adjust_cmd.twist.linear_x = 0.0
-                    adjust_cmd.twist.linear_y = 0.0
-                    
-                    if static_fz < 2.5:
-                        # 受力不足，轻微下探
-                        adjust_cmd.twist.linear_z = -0.001
-                    elif static_fz > 5.5:
-                        # 受力过大，明显抬起
-                        adjust_cmd.twist.linear_z = 0.003
-                        
-                    self.vel_pub.publish(adjust_cmd)
-                    rate.sleep()
-                    
-                    if adjust_cnt > 6: # 最多微调 0.15秒，极速跳出防止卡死
-                        break
+                static_fz = self.current_fz
                 
-                # 微调结束后彻底停住 Z
-                self.vel_pub.publish(stop_cmd)
+                # 辅助力控：我们不再产生垂直速度去“追”力，而是宏观地修改 z_offset（给下一个点的主控高度做参考）
+                if static_fz > 5.5:
+                    self.z_offset += 0.0008  # 压力偏大，将下一刻的全局绘制高度抬起 0.8mm
+                elif static_fz < 2.0:
+                    self.z_offset -= 0.0008  # 压力偏小，将下一刻的全局绘制高度下降 0.8mm
+                    
+                # 限制最大补偿基准，防止彻底穿模失控 (最多补偿 8mm)
+                self.z_offset = np.clip(self.z_offset, -0.008, 0.008)
                 
             if i % 5 == 0 or i == len(aligned_waypoints) - 1:
                 rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fz: {self.current_fz:.2f}N | 高度 Z: {self.current_z:.4f}m")
