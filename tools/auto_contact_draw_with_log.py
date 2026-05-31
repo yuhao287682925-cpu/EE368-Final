@@ -95,15 +95,84 @@ class PureAdmittanceDrawer:
                 })
         if not raw_waypoints: return
                 
-        rospy.loginfo("🔄 正在半空中自动标定重力与关节固有偏置...")
-        rospy.sleep(1.0)
-        samples = []
-        for _ in range(40):
-            samples.append(self.raw_fz)
-            rospy.sleep(0.025)
-        self.fz_bias = np.mean(samples)
+        # 2. 空中姿态自适应重力偏置拟合 (Dynamic Gravity Bias Fitting)
+        rospy.loginfo("🔄 正在进行悬空多点特征采样，拟合重力偏置...")
+        
+        first_draw_wp = next(w for w in raw_waypoints if w['phase'] in ['draw', 'touch_down'])
+        u_ref_x = first_draw_wp['x']
+        u_ref_y = first_draw_wp['y']
+        dxs = [wp['x'] - u_ref_x for wp in raw_waypoints]
+        dys = [wp['y'] - u_ref_y for wp in raw_waypoints]
+        
+        sample_dx_dy = [
+            (0.0, 0.0),
+            (min(dxs), min(dys)),
+            (min(dxs), max(dys)),
+            (max(dxs), min(dys)),
+            (max(dxs), max(dys))
+        ]
+        
+        R_list = []
+        Fz_list = []
+        start_x = self.current_x
+        start_y = self.current_y
+        
+        k_pos_calib = 6.0
+        max_speed_calib = 0.04
+        rate = rospy.Rate(40)
+        
+        for idx, (dx, dy) in enumerate(sample_dx_dy):
+            target_x = start_x + dx
+            target_y = start_y + dy
+            
+            while not rospy.is_shutdown():
+                err_x = target_x - self.current_x
+                err_y = target_y - self.current_y
+                if math.hypot(err_x, err_y) < 0.001: break
+                vx = k_pos_calib * err_x
+                vy = k_pos_calib * err_y
+                v_mag = math.hypot(vx, vy)
+                if v_mag > max_speed_calib:
+                    vx, vy = vx * (max_speed_calib / v_mag), vy * (max_speed_calib / v_mag)
+                self.send_cartesian_velocity(vx, vy, 0.0)
+                rate.sleep()
+                
+            for _ in range(20):
+                self.send_cartesian_velocity(0.0, 0.0, 0.0)
+                rate.sleep()
+                
+            samples = []
+            for _ in range(20):
+                samples.append(self.raw_fz)
+                self.send_cartesian_velocity(0.0, 0.0, 0.0)
+                rate.sleep()
+                
+            R_current = math.hypot(self.current_x, self.current_y)
+            Fz_mean = np.mean(samples)
+            R_list.append(R_current)
+            Fz_list.append(Fz_mean)
+            rospy.loginfo(f"  采样点 {idx+1}/5 | 半径 R: {R_current:.4f}m | 静态受力: {Fz_mean:.2f}N")
+            
+        while not rospy.is_shutdown():
+            err_x = start_x - self.current_x
+            err_y = start_y - self.current_y
+            if math.hypot(err_x, err_y) < 0.001: break
+            vx, vy = k_pos_calib * err_x, k_pos_calib * err_y
+            v_mag = math.hypot(vx, vy)
+            if v_mag > max_speed_calib:
+                vx, vy = vx * (max_speed_calib / v_mag), vy * (max_speed_calib / v_mag)
+            self.send_cartesian_velocity(vx, vy, 0.0)
+            rate.sleep()
+            
+        for _ in range(10):
+            self.send_cartesian_velocity(0.0, 0.0, 0.0)
+            rate.sleep()
+            
+        coeffs = np.polyfit(R_list, Fz_list, 1)
+        self.bias_a = coeffs[0]
+        self.bias_b = coeffs[1]
         self.calibrated = True
-        rospy.loginfo(f"✅ 偏置去皮完成 (Z Bias: {self.fz_bias:.2f} N)")
+        rospy.loginfo(f"✅ 重力偏置曲线拟合完成! F_bias(R) = {self.bias_a:.2f} * R + {self.bias_b:.2f}")
         
         rospy.loginfo("🚀 开始自动寻面 (导纳着陆)...")
         rate = rospy.Rate(40)
@@ -120,10 +189,13 @@ class PureAdmittanceDrawer:
             loop_cnt += 1
             raw_f = self.raw_fz
             
+            R_curr = math.hypot(self.current_x, self.current_y)
+            dynamic_bias = self.bias_a * R_curr + self.bias_b
+            
             if loop_cnt < 60:
                 local_fz_bias = 0.90 * local_fz_bias + 0.10 * raw_f
-            elif abs(raw_f - local_fz_bias) < 5.0:
-                local_fz_bias = 0.98 * local_fz_bias + 0.02 * raw_f
+            elif abs(raw_f - dynamic_bias) < 5.0:
+                local_fz_bias = 0.98 * local_fz_bias + 0.02 * dynamic_bias
                 
             self.current_net_fz = abs(raw_f - local_fz_bias)
             self.force_pub.publish(Float64(self.current_net_fz))
@@ -161,8 +233,9 @@ class PureAdmittanceDrawer:
             
         rospy.loginfo("✍️ 启动纯混合导纳控制器，开始自适应贴面绘图！")
         
-        target_force = 3.5
-        k_force = 0.003
+        target_force = 6.0
+        k_force = 0.002
+
         k_pos = 12.0
         max_xy_speed = 0.045
         
@@ -190,7 +263,10 @@ class PureAdmittanceDrawer:
                 cmd_vx = cmd_vx * (max_xy_speed / v_mag)
                 cmd_vy = cmd_vy * (max_xy_speed / v_mag)
                 
-            raw_net_fz = abs(self.raw_fz - self.fz_bias)
+            R_curr = math.hypot(self.current_x, self.current_y)
+            dynamic_bias = self.bias_a * R_curr + self.bias_b
+            
+            raw_net_fz = abs(self.raw_fz - dynamic_bias)
             filtered_fz = 0.8 * filtered_fz + 0.2 * raw_net_fz
             self.force_pub.publish(Float64(filtered_fz))
             
