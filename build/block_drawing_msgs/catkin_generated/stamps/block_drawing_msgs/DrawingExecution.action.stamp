@@ -1,0 +1,18 @@
+# DrawingExecution.action
+# 绘画执行 Action: 可暂停/取消/反馈进度
+
+block_drawing_msgs/SurfaceTrajectory[] trajectories  # Goal: 要执行的轨迹序列
+---
+# Result
+bool    completed           # 是否全部完成
+int32   faces_drawn         # 已完成的面数
+float64 total_arc_length    # 总弧长 [m]
+string  message             # 错误信息 (如有)
+
+---
+# Feedback
+int32   current_face        # 当前正在画的面 (0~4)
+int32   current_waypoint    # 当前 waypoint 索引
+float64 progress_fraction   # 完成比例 [0.0, 1.0]
+float64 estimated_force     # 当前估计接触力 [N]
+string  state               # 执行器状态字符串

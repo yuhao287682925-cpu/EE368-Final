@@ -52,9 +52,9 @@ FREE_SPACE = 0
 SOFT_CONTACT = 1
 HARD_CONTACT = 2
 
-class SideContactDrawer:
+class AutoContactDrawer:
     def __init__(self):
-        rospy.init_node('side_contact_draw', anonymous=True)
+        rospy.init_node('auto_contact_draw', anonymous=True)
         
         # 初始化 Gen3-lite DH 模型
         dh_params_list = np.array([[0, 0, 243.3/1000, 0],
@@ -81,18 +81,18 @@ class SideContactDrawer:
         self.kd_down = 0.0001
         
         self.max_step = 0.01          # 单周期最大位移微调量
-        self.y_offset = 0.0           # 虚拟 Z 轴力控累积位移 (用于防飞车限位)
-        self.max_y_offset = 0.008     # 最大抬升位移限制 (0.8 cm，防止悬空)
-        self.min_y_offset = -0.03     # 最大下压位移限制 (-3.0 cm)
+        self.z_offset = 0.0           # 虚拟 Z 轴力控累积位移 (用于防飞车限位)
+        self.max_z_offset = 0.008     # 最大抬升位移限制 (0.8 cm，防止悬空)
+        self.min_z_offset = -0.03     # 最大下压位移限制 (-3.0 cm)
         
         # 零点力校准状态
-        self.fy_bias = 0.0
+        self.fz_bias = 0.0
         self.wrist_torque_bias = 0.0
         self.calibration_samples = []
         self.torque_calibration_samples = []
         self.calibrated = False
-        self.current_fy = 0.0
-        self.raw_fy = 0.0
+        self.current_fz = 0.0
+        self.raw_fz = 0.0
         self.is_static = True
         self.wrist_torque = 0.0
         self.prev_force_error = 0.0
@@ -107,8 +107,8 @@ class SideContactDrawer:
         
         # 控制指令发布话题
         self.vel_pub = rospy.Publisher("/my_gen3_lite/in/cartesian_velocity", TwistCommand, queue_size=1)
-        self.force_fy_pub = rospy.Publisher("/force_control/auto/estimated_fy", Float64, queue_size=1)
-        self.y_offset_pub = rospy.Publisher("/force_control/auto/y_offset", Float64, queue_size=1)
+        self.force_fz_pub = rospy.Publisher("/force_control/auto/estimated_fz", Float64, queue_size=1)
+        self.z_offset_pub = rospy.Publisher("/force_control/auto/z_offset", Float64, queue_size=1)
         
         # MoveIt 控制器接口
         import moveit_commander
@@ -137,7 +137,7 @@ class SideContactDrawer:
         # 2. 求解基础雅可比矩阵并计算估计力
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
-        raw_fy = tool_force[1]
+        raw_fz = tool_force[2]
         
         # 提取手腕末端关节 (第 6 关节) 原始力矩
         raw_wrist_torque = torques[5]
@@ -147,27 +147,27 @@ class SideContactDrawer:
         
         # 自动零点校准
         if not self.calibrated:
-            self.calibration_samples.append(raw_fy)
+            self.calibration_samples.append(raw_fz)
             self.torque_calibration_samples.append(raw_wrist_torque)
             if len(self.calibration_samples) >= 40:
-                self.fy_bias = np.mean(self.calibration_samples)
+                self.fz_bias = np.mean(self.calibration_samples)
                 self.wrist_torque_bias = np.mean(self.torque_calibration_samples)
                 self.calibrated = True
-                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Z Bias): {self.fy_bias:.2f} N, (Torque Bias): {self.wrist_torque_bias:.3f} Nm")
+                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Z Bias): {self.fz_bias:.2f} N, (Torque Bias): {self.wrist_torque_bias:.3f} Nm")
             return
         
         # 估计末端 Z 轴向力和手腕力矩（减去零点偏差并取绝对值）
-        self.current_fy = abs(raw_fy - self.fy_bias)
+        self.current_fz = abs(raw_fz - self.fz_bias)
         self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
         
         # 在空闲悬空且静止状态下进行温漂自动去皮（超低通偏置更新）
-        if self.state == FREE_SPACE and self.is_static and self.current_fy < 2.0:
-            self.fy_bias = 0.9995 * self.fy_bias + 0.0005 * raw_fy
+        if self.state == FREE_SPACE and self.is_static and self.current_fz < 2.0:
+            self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * raw_fz
             self.wrist_torque_bias = 0.9995 * self.wrist_torque_bias + 0.0005 * raw_wrist_torque
-            self.current_fy = abs(raw_fy - self.fy_bias)
+            self.current_fz = abs(raw_fz - self.fz_bias)
             self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
         
-        self.force_fy_pub.publish(Float64(self.current_fy))
+        self.force_fz_pub.publish(Float64(self.current_fz))
 
     def run_auto_touchdown(self):
         """
@@ -190,7 +190,7 @@ class SideContactDrawer:
         
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 3 # 基座坐标系
-        down_cmd.twist.linear_y = -0.010 # -10mm/s 向下，放慢速度以配合更长的确认窗口
+        down_cmd.twist.linear_z = -0.010 # -10mm/s 向下，放慢速度以配合更长的确认窗口
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
@@ -206,12 +206,12 @@ class SideContactDrawer:
             loop_cnt += 1
             
             # 维护最新力数据缓存序列
-            recent_forces.append(self.current_fy)
+            recent_forces.append(self.current_fz)
             if len(recent_forces) > verify_size:
                 recent_forces.pop(0)
             
             if loop_cnt % 15 == 0:
-                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fy: {self.current_fy:.2f} N | 缓存序列: {[round(f, 2) for f in recent_forces]}")
+                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 缓存序列: {[round(f, 2) for f in recent_forces]}")
             
             # 起步前 1.5 秒 (约 60 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
             if loop_cnt > 60:
@@ -219,7 +219,7 @@ class SideContactDrawer:
                 if len(recent_forces) >= verify_size and all(f >= 12.0 for f in recent_forces):
                     rospy.loginfo("🟢 判定触及纸箱表面！")
                     rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 12.0 N)")
-                    rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fy:.2f} N")
+                    rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fz:.2f} N")
                     
                     # 发送 10 次 0 速度，确保驱动层刹停
                     for _ in range(10):
@@ -235,55 +235,9 @@ class SideContactDrawer:
             rate.sleep()
         
         if contact_detected:
-            rospy.loginfo("⬆️ 执行就近重力校准：微抬 3mm 脱离接触...")
-            lift_cmd = TwistCommand()
-            lift_cmd.reference_frame = 3
-            lift_cmd.twist.linear_y = 0.010 # 10mm/s 抬升
-            for _ in range(20): # 抬升约 0.5秒，即 5mm
-                self.vel_pub.publish(lift_cmd)
-                rospy.sleep(0.025)
-            
-            for _ in range(5):
-                self.vel_pub.publish(stop_cmd)
-                rospy.sleep(0.025)
-                
-            rospy.loginfo("⏸️ 重新执行高精度就近零点校准 (0.8秒)...")
-            self.calibrated = False
-            self.calibration_samples = []
-            self.torque_calibration_samples = []
-            rospy.sleep(0.8)
-            
-            while not self.calibrated and not rospy.is_shutdown():
-                rospy.sleep(0.1)
-                
-            rospy.loginfo("⬇️ 二次轻柔下探...")
-            down_cmd.twist.linear_y = -0.003 # 极慢速下探 3mm/s，防止第一下过深
-            recent_forces.clear()
-            contact_detected_again = False
-            loop_cnt = 0
-            
-            while not rospy.is_shutdown():
-                loop_cnt += 1
-                recent_forces.append(self.current_fy)
-                if len(recent_forces) > 5:
-                    recent_forces.pop(0)
-                    
-                # 屏蔽前 0.5 秒加速抖动
-                if loop_cnt > 20:
-                    if len(recent_forces) >= 5 and all(f >= 1.2 for f in recent_forces): # 在 3mm/s 极慢速下，1.2N 即可稳妥确认接触
-                        rospy.loginfo("🟢 二次接触锁定！")
-                        for _ in range(10):
-                            self.vel_pub.publish(stop_cmd)
-                            rospy.sleep(0.005)
-                        contact_detected_again = True
-                        break
-                        
-                self.vel_pub.publish(down_cmd)
-                rate.sleep()
-                
             rospy.sleep(0.5) # 等待彻底静止
             
-            # 使用高精度底层正运动学估算的绝对坐标
+            # 使用高精度底层正运动学估算的绝对坐标 (防止 MoveIt 获取超时)
             current_pose = Pose()
             current_pose.position.x = self.current_x
             current_pose.position.y = self.current_y
@@ -299,21 +253,21 @@ class SideContactDrawer:
         基于接触状态机状态的高级速度型力控外环与 Leaky 积分器
         """
         if not self.calibrated:
-            self.y_offset = 0.0
+            self.z_offset = 0.0
             self.prev_force_error = 0.0
             return 0.0, 0.0
         
         v_z_comp = 0.0
         
         if state == FREE_SPACE:
-            # 1. 悬空状态下，y_offset 以较快的漏损系数平滑收敛归零，不计算力控速度
-            self.y_offset = 0.95 * self.y_offset
+            # 1. 悬空状态下，z_offset 以较快的漏损系数平滑收敛归零，不计算力控速度
+            self.z_offset = 0.95 * self.z_offset
             self.prev_force_error = 0.0
             
         elif state == SOFT_CONTACT:
             # 2. 软接触状态下，给定极慢的向下贴合速度，漏损系数也设为 0.95 限制偏置
             v_z_comp = -0.002
-            self.y_offset = 0.95 * self.y_offset + v_z_comp * dt
+            self.z_offset = 0.95 * self.z_offset + v_z_comp * dt
             self.prev_force_error = 0.0
             
         elif state == HARD_CONTACT:
@@ -340,14 +294,14 @@ class SideContactDrawer:
             v_z_comp = np.clip(v_z_comp, -0.008, 0.008)
             
             # Leaky 积分更新，漏损系数 0.995
-            self.y_offset = 0.995 * self.y_offset + v_z_comp * dt
+            self.z_offset = 0.995 * self.z_offset + v_z_comp * dt
             
-        # 触发防飞车保护（限制 y_offset 范围）
-        self.y_offset = np.clip(self.y_offset, self.min_y_offset, self.max_y_offset)
+        # 触发防飞车保护（限制 z_offset 范围）
+        self.z_offset = np.clip(self.z_offset, self.min_z_offset, self.max_z_offset)
         
-        self.y_offset_pub.publish(Float64(self.y_offset))
+        self.z_offset_pub.publish(Float64(self.z_offset))
         
-        return self.y_offset, v_z_comp
+        return self.z_offset, v_z_comp
 
     def execute_and_draw(self, csv_file):
         """
@@ -380,21 +334,20 @@ class SideContactDrawer:
                 first_draw_idx = idx
                 break
         
-        u_ref = raw_waypoints[first_draw_idx]['x']
-        v_ref = raw_waypoints[first_draw_idx]['y']
+        u_ref_x = raw_waypoints[first_draw_idx]['x']
+        u_ref_y = raw_waypoints[first_draw_idx]['y']
+        u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
         
         rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹...")
         aligned_waypoints = []
         for wp in raw_waypoints:
-            du = wp['x'] - u_ref
-            dv = wp['y'] - v_ref
             aligned_wp = {
-                'x': contact_pose.position.x - du,
-                'y_nominal': contact_pose.position.y,
-                'z': contact_pose.position.z - dv,
-                'nx': wp['nx'] if 'nx' in wp else 0.0,
-                'ny': wp['ny'] if 'ny' in wp else 0.0,
-                'nz': wp['nz'] if 'nz' in wp else 0.0,
+                'x': contact_pose.position.x + (wp['x'] - u_ref_x),
+                'y': contact_pose.position.y + (wp['y'] - u_ref_y),
+                'z_nominal': contact_pose.position.z + (wp['z_nominal'] - u_ref_z),
+                'nx': wp['nx'],
+                'ny': wp['ny'],
+                'nz': wp['nz'],
                 'phase': wp['phase'],
                 'stroke_id': wp['stroke_id']
             }
@@ -412,93 +365,130 @@ class SideContactDrawer:
         draw_force_window = []
         draw_window_size = 4
         
-        # 轨迹日志
-        actual_log = []
-        theo_log = []
-        
         for i, wp in enumerate(aligned_waypoints):
             if rospy.is_shutdown():
                 break
             
-            phase = wp['phase']
+            quat = get_orientation_for_normal(wp['nx'], wp['ny'], wp['nz'])
+            
+            # 位置控制的目标点 XY
             target_x = wp['x']
-            target_z = wp['z']
+            target_y = wp['y']
             
-            # 动态刚度：空中极速，落笔放缓
-            k_pos = 1.5 if phase == 'draw' else 3.5
-            k_pos_y = 2.0  # 核心改动：Y轴使用距离/高度刚度控制
+            k_pos = 0.8  # 降低刚度至 0.8，减慢运动速度确保每一个点误差极小
             
-            # === 阶段 1：以距离和高度为主控的平滑移动 ===
+            stuck_cnt = 0
+            prev_servo_x = self.current_x
+            prev_servo_y = self.current_y
+            
             while not rospy.is_shutdown():
+                # 强制在非绘制/非下探阶段使状态回到 FREE_SPACE 状态
+                if wp['phase'] not in ['draw', 'touch_down']:
+                    if self.state != FREE_SPACE:
+                        self.state = FREE_SPACE
+                        self.state_counter = 0
+                        rospy.loginfo("🔵 阶段转换: 强制切换至 FREE_SPACE")
+                
+                target_z = wp['z_nominal'] + self.z_offset
+                
                 dx = target_x - self.current_x
+                dy = target_y - self.current_y
                 dz = target_z - self.current_z
                 
-                # 法向(Y)主控：计算绝对目标高度
-                if phase not in ['draw', 'touch_down']:
-                    target_y = wp['y_nominal']
-                else:
-                    target_y = wp['y_nominal'] + self.y_offset
-                    
-                dy = target_y - self.current_y
-                
-                dist_to_target = math.hypot(dx, dz)
-                if dist_to_target < 0.0015: 
+                dist_to_target = math.hypot(dx, dy)
+                if dist_to_target < 0.001:
                     break
+                
+                draw_force_window.append(self.current_fz)
+                if len(draw_force_window) > draw_window_size:
+                    draw_force_window.pop(0)
+                fz_filtered = np.mean(draw_force_window) if len(draw_force_window) >= draw_window_size else self.current_fz
+                
+                # 状态机跳转
+                if self.state == FREE_SPACE:
+                    if fz_filtered > 3.5:
+                        self.state_counter += 1
+                        if self.state_counter >= 6:
+                            self.state = SOFT_CONTACT
+                            self.state_counter = 0
+                            rospy.loginfo(f"🟠 状态转移: FREE_SPACE -> SOFT_CONTACT (Fz={fz_filtered:.2f}N)")
+                    else:
+                        self.state_counter = 0
+                elif self.state == SOFT_CONTACT:
+                    if fz_filtered > 5.0:
+                        self.state_counter += 1
+                        if self.state_counter >= 6:
+                            self.state = HARD_CONTACT
+                            self.state_counter = 0
+                            rospy.loginfo(f"🔴 状态转移: SOFT_CONTACT -> HARD_CONTACT (Fz={fz_filtered:.2f}N)")
+                    elif fz_filtered < 2.5:
+                        self.state = FREE_SPACE
+                        self.state_counter = 0
+                        draw_force_window = []
+                        rospy.loginfo(f"🔵 状态转移: SOFT_CONTACT -> FREE_SPACE (完全悬空, Fz={fz_filtered:.2f}N)")
+                    else:
+                        self.state_counter = 0
+                elif self.state == HARD_CONTACT:
+                    if fz_filtered < 3.5:
+                        self.state_counter += 1
+                        if self.state_counter >= 8:
+                            self.state = SOFT_CONTACT
+                            self.state_counter = 0
+                            rospy.loginfo(f"🟠 状态转移: HARD_CONTACT -> SOFT_CONTACT (力不足退回, Fz={fz_filtered:.2f}N)")
+                    else:
+                        self.state_counter = 0
+                
+                # 卡阻检测
+                if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
+                    movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
+                    if movement < 0.0003:
+                        stuck_cnt += 1
+                    else:
+                        stuck_cnt = max(0, stuck_cnt - 1)
+                else:
+                    stuck_cnt = 0
+                
+                prev_servo_x = self.current_x
+                prev_servo_y = self.current_y
+                
+                # 动态调整目标压力
+                if self.state == HARD_CONTACT and stuck_cnt >= 8:
+                    self.target_force = max(2.5, self.base_target_force - 0.44 * (stuck_cnt - 7))
+                    if stuck_cnt % 8 == 0:
+                        rospy.logwarn(f"⚠️ 末端可能卡阻 (stuck_cnt={stuck_cnt})，降低目标压力至 {self.target_force:.2f}N")
+                else:
+                    self.target_force = self.base_target_force
+                
+                # 力控律
+                z_offset_val, v_z_comp = self.update_force_control(fz_filtered, self.state, dt)
                 
                 cmd = TwistCommand()
                 cmd.reference_frame = 3
+                cmd.duration = 0
                 
-                v_x = k_pos * dx
-                v_z = k_pos * dz
-                if 0 < abs(v_x) < 0.008 and dist_to_target > 0.0015: v_x = math.copysign(0.008, v_x)
-                if 0 < abs(v_z) < 0.008 and dist_to_target > 0.0015: v_z = math.copysign(0.008, v_z)
+                cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
+                cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
                 
-                cmd.twist.linear_x = np.clip(v_x, -0.04, 0.04)
-                cmd.twist.linear_z = np.clip(v_z, -0.04, 0.04)
-                
-                if phase not in ['draw', 'touch_down']:
-                    # 抬笔移动阶段：用位置误差主控 Y
-                    dy = wp['y_nominal'] - self.current_y
-                    cmd.twist.linear_y = np.clip(k_pos_y * dy, -0.025, 0.025)
-                    if dy > 0.002:
+                if self.state == FREE_SPACE:
+                    target_z_nominal = wp['z_nominal']
+                    dz_nominal = target_z_nominal - self.current_z
+                    cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.015, 0.015)
+                elif self.state == SOFT_CONTACT:
+                    cmd.twist.linear_z = -0.002
+                elif self.state == HARD_CONTACT:
+                    cmd.twist.linear_z = v_z_comp
+                    if v_z_comp > 0.0:
                         cmd.twist.linear_x = 0.0
-                        cmd.twist.linear_z = 0.0
-                else:
-                    # 绘制阶段：锁定 Y 法向，防止摩擦力抛起导致悬空
-                    cmd.twist.linear_y = 0.0
-                    
-                # 记录高频日志
-                if phase == 'draw':
-                    actual_log.append({'x': self.current_x, 'y': self.current_y, 'z': self.current_z})
-                    theo_log.append({'x': target_x, 'y': target_y, 'z': target_z})
-                    
+                        cmd.twist.linear_y = 0.0
+                
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
                 cmd.twist.angular_z = 0.0
                 
                 self.vel_pub.publish(cmd)
                 rate.sleep()
-                
-            # === 阶段 2：刹车静止，并进行纯辅助性质的力控修正 ===
-            if phase in ['draw', 'touch_down'] and (i % 2 == 0 or phase == 'touch_down'):
-                stop_cmd = TwistCommand()
-                stop_cmd.reference_frame = 3
-                self.vel_pub.publish(stop_cmd)
-                rospy.sleep(0.025)
-                
-                static_fz = self.current_fy
-                
-                # 辅助力控：微量调整 y_offset
-                if static_fz > 5.0:
-                    self.y_offset += 0.0004  # 压力偏大，微抬 0.4mm，加快释压避免卡死
-                elif static_fz < 2.5:
-                    self.y_offset -= 0.0010  # 压力偏小（悬空风险），快速下压 1.0mm
-                    
-                # 上限 +0.8mm：居中，能决流卡阻又不至于明显悬空；下限 -10mm：应对纸箱塌陷
-                self.y_offset = np.clip(self.y_offset, -0.010, 0.0008)
-                
-            if i % 5 == 0 or i == len(aligned_waypoints) - 1:
-                rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fy: {self.current_fy:.2f}N | 深度 Y: {self.current_z:.4f}m")
+            
+            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 状态: {self.state} | Fz: {self.current_fz:.2f}N | Offset Z: {self.z_offset:.4f}m")
         
         # 绘制结束
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
@@ -517,19 +507,16 @@ class SideContactDrawer:
         lift_cmd.reference_frame = 3
         lift_cmd.twist.linear_x = 0.0
         lift_cmd.twist.linear_y = 0.0
+        lift_cmd.twist.linear_z = 0.03
         lift_cmd.twist.angular_x = 0.0
         lift_cmd.twist.angular_y = 0.0
         lift_cmd.twist.angular_z = 0.0
         
-        # 严格执行用户要求：采用多段控制来进行抬升
-        # 分三段加速抬升，平滑脱离
-        for speed in [0.005, 0.015, 0.030]:
-            lift_cmd.twist.linear_y = speed
-            for _ in range(15):
-                if rospy.is_shutdown():
-                    break
-                self.vel_pub.publish(lift_cmd)
-                rospy.sleep(0.025)
+        for _ in range(40):
+            if rospy.is_shutdown():
+                break
+            self.vel_pub.publish(lift_cmd)
+            rospy.sleep(0.025)
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
@@ -538,33 +525,15 @@ class SideContactDrawer:
             rospy.sleep(0.01)
         
         self.move_group.stop()
-        
-        # 保存轨迹记录并自动分析
-        with open('side_actual_executed_trajectory.csv', 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
-            writer.writeheader()
-            writer.writerows(actual_log)
-        with open('side_theo_mapped_trajectory.csv', 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
-            writer.writeheader()
-            writer.writerows(theo_log)
-            
-        rospy.loginfo("📊 轨迹日志已保存至 side_actual_executed_trajectory.csv 和 side_theo_mapped_trajectory.csv")
         rospy.loginfo("🎉 全自动伺服力控绘制任务圆满完成！")
-        
-        try:
-            import subprocess
-            subprocess.Popen(["python3", "tools/analyze_error.py", "--actual", "side_actual_executed_trajectory.csv", "--theo", "side_theo_mapped_trajectory.csv"])
-        except Exception as e:
-            rospy.logerr(f"启动自动分析失败: {e}")
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print("用法: python3 side_contact_draw_with_log.py <path_to_csv>")
+        print("用法: python3 auto_contact_draw.py <path_to_csv>")
         sys.exit(1)
     
     try:
-        drawer = SideContactDrawer()
+        drawer = AutoContactDrawer()
         drawer.execute_and_draw(sys.argv[1])
     except rospy.ROSInterruptException:
         pass

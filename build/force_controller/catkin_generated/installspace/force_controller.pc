@@ -1,0 +1,8 @@
+prefix=/home/huang/catkin_ws/install
+
+Name: force_controller
+Description: Description of force_controller
+Version: 0.1.0
+Cflags: -I${prefix}/include
+Libs: -L${prefix}/lib -lforce_controller
+Requires: roscpp sensor_msgs geometry_msgs std_msgs std_srvs kortex_driver
