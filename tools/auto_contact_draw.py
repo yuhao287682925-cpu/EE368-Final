@@ -169,11 +169,13 @@ class AutoContactDrawer:
         rospy.loginfo("🚀 开始自动下探寻面程序...")
         self.state = FREE_SPACE  # 强制处于 FREE_SPACE 以使去皮逻辑生效
         
-        # 强迫机械臂在启动前静止 1.5 秒，重新去皮校零，完全平息之前移动带来的残余力矩
-        rospy.loginfo("⏸️ 机械臂静止中 (1.5秒)，正在平息关节残留力矩并执行高精度校零...")
+        # 强迫机械臂在启动前彻底静止 1.5 秒，完全平息之前移动带来的残余力矩
+        rospy.loginfo("⏸️ 机械臂静止中 (1.5秒)，正在平息关节残留力矩...")
+        rospy.sleep(1.5)
+        
+        rospy.loginfo("⚖️ 开始高精度去皮校零...")
         self.calibrated = False
         self.calibration_samples = []
-        rospy.sleep(1.5)
         
         while not self.calibrated and not rospy.is_shutdown():
             rospy.sleep(0.1)
@@ -194,16 +196,27 @@ class AutoContactDrawer:
         recent_forces = []
         verify_size = 10
         
+        # 获取一个下探过程专用的基准，用于姿态温漂补偿
+        local_fz_bias = self.fz_bias
+        
         while not rospy.is_shutdown():
             loop_cnt += 1
             
+            raw_f = self.raw_fz
+            # 只要当前受力小于 5.0N (认定为仍在悬空)，就让零点偏置缓慢跟随当前的原始受力，消除姿态变化带来的重力补偿漂移。
+            # 一旦受力超过 5.0N，说明可能碰到了纸箱，立刻停止更新偏置，准备触发 15N 停机！
+            if abs(raw_f - local_fz_bias) < 5.0 and loop_cnt > 60:
+                local_fz_bias = 0.98 * local_fz_bias + 0.02 * raw_f
+                
+            current_net_fz = abs(raw_f - local_fz_bias)
+            
             # 维护最新力数据缓存序列
-            recent_forces.append(self.current_fz)
+            recent_forces.append(current_net_fz)
             if len(recent_forces) > verify_size:
                 recent_forces.pop(0)
             
             if loop_cnt % 15 == 0:
-                rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 缓存序列: {[round(f, 2) for f in recent_forces]}")
+                rospy.loginfo(f"⏳ 正在直线下探... 净 Fz: {current_net_fz:.2f} N (Bias: {local_fz_bias:.2f}) | 缓存: {[round(f, 2) for f in recent_forces]}")
                 
             # 起步前 1.5 秒 (约 60 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
             if loop_cnt > 60:
@@ -211,7 +224,7 @@ class AutoContactDrawer:
                 if len(recent_forces) >= verify_size and all(f >= 15.0 for f in recent_forces):
                     rospy.loginfo(f"🟢 判定触及纸箱表面！")
                     rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 15.0 N)")
-                    rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fz:.2f} N")
+                    rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {current_net_fz:.2f} N")
                     
                     # 发送 10 次 0 速度，确保驱动层刹停
                     for _ in range(10):
