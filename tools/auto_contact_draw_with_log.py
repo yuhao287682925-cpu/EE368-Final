@@ -452,16 +452,17 @@ class AutoContactDrawer:
                 cmd.twist.linear_y = np.clip(v_y, -0.04, 0.04)
                 
                 if phase not in ['draw', 'touch_down']:
-                    # 抬笔移动阶段：用位置误差主控 Z，快速到达目标高度
+                    # 抬笔移动阶段：用位置误差主控 Z
                     dz = wp['z_nominal'] - self.current_z
                     cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.025, 0.025)
-                    # 明显抬升时锁死水平方向
                     if dz > 0.002:
                         cmd.twist.linear_x = 0.0
                         cmd.twist.linear_y = 0.0
                 else:
-                    # 绘制阶段：移动时严格锁定 Z，防止将摩擦力误判为据面抬升
-                    cmd.twist.linear_z = 0.0
+                    # 绘制阶段：以 z_nominal + z_offset 为目标高度做位置追踪
+                    target_z = wp['z_nominal'] + self.z_offset
+                    dz = target_z - self.current_z
+                    cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.015, 0.015)
                     
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
@@ -479,14 +480,14 @@ class AutoContactDrawer:
                 
                 static_fz = self.current_fz
                 
-                # 辅助力控：只允许向下追，绝不抬升
-                # 初次由 3mm/s 下探已确认精确接触点，应当信任这个高度
-                if static_fz < 2.5:
-                    self.z_offset -= 0.0010  # 压力偏小或悬空，快速下压 1.0mm
-                # 如果力偏大，不补偿、直接信任初始探面高度，防止抬升悬空
+                # 辅助力控：微量调整 z_offset，上限收紧到仅 +0.3mm，防止明显抬升
+                if static_fz > 5.5:
+                    self.z_offset += 0.0002  # 压力偏大，极小幅微抬 0.2mm
+                elif static_fz < 2.5:
+                    self.z_offset -= 0.0010  # 压力偏小（悬空风险），快速下压 1.0mm
                     
-                # 【严格物理锁】上限为 0：绝对不允许抬升，只允许深追 10mm
-                self.z_offset = np.clip(self.z_offset, -0.010, 0.000)
+                # 上限 +0.3mm：允许轻微释压，但不能明显悬空；下限 -10mm：应对纸箱塌陷
+                self.z_offset = np.clip(self.z_offset, -0.010, 0.0003)
                 
             if i % 5 == 0 or i == len(aligned_waypoints) - 1:
                 rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fz: {self.current_fz:.2f}N | 高度 Z: {self.current_z:.4f}m")
