@@ -434,8 +434,8 @@ class AutoContactDrawer:
                 if wp['phase'] in ['draw', 'touch_down']:
                     # 只要预期下发速度大于 5mm/s 且不在抬升冷却期，就启用防戳破卡死检测
                     if expected_speed > 0.003 and relief_cooldown == 0:
-                        # 恢复瞬时重置机制，过滤掉由于电机刚启动/转向时的加速度迟滞导致的“假受阻”
-                        if actual_speed < 0.3 * expected_speed or actual_speed < 0.002:
+                        # 提高卡死检测灵敏度：实际速度跌破预期速度的 50% 即视为物理受阻（克服连杆柔性弯曲导致的假移动）
+                        if actual_speed < 0.5 * expected_speed or actual_speed < 0.005:
                             stuck_cnt += 1
                         else:
                             stuck_cnt = 0
@@ -449,15 +449,15 @@ class AutoContactDrawer:
                 
                 # 2. 状态机转移逻辑
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if stuck_cnt > 8: # 必须连续卡死 8 帧 (0.2秒)，确保是真的陷入了坑洼，而不是在加速
-                        z_offset_relief += 0.0035 # 考虑到笔尖形变缓冲，大幅拔高 3.5mm 以确保笔尖完全脱离障碍物
-                        z_offset_relief = min(z_offset_relief, 0.015) # 最大允许拔高 15mm
+                    if stuck_cnt > 8: # 必须连续卡死 8 帧 (0.2秒)，确保是真的陷入了坑洼
+                        z_offset_relief += 0.005 # 遇到水平卡死，大幅拔高 5mm 逃逸
+                        z_offset_relief = min(z_offset_relief, 0.015)
                         
-                        macro_z_shift += 0.0004
+                        macro_z_shift += 0.002 # 宏观高度永久提升 2mm！(极其关键，解决陷得太深的问题)
                         
-                        relief_cooldown = 10 # 停滞 10 帧 (0.25秒)，确保有时间完成物理拔出
+                        relief_cooldown = 20 # 停滞 20 帧 (0.5秒)，确保有充足时间垂直拔出
                         stuck_cnt = 0
-                        rospy.logwarn(f"⚠️ 物理受阻 (Act/Exp={actual_speed:.3f}/{expected_speed:.3f})！瞬发退缩且基准抬升 -> {macro_z_shift:.4f}m")
+                        rospy.logwarn(f"⚠️ 物理受阻 (Act/Exp={actual_speed:.3f}/{expected_speed:.3f})！瞬发退缩且基准永久抬升 -> {macro_z_shift:.4f}m")
                 else:
                     # 提笔移动阶段，清空状态
                     z_offset_relief = 0.0
@@ -465,8 +465,8 @@ class AutoContactDrawer:
                     stuck_cnt = 0
                 
                 # 3. 目标高度计算
-                # 关键修复：既然 10N 探面时纸箱已被深深压陷，这里设为负值(-0.001)，等于基准向上抬高 1mm！大幅释放压力！
-                fixed_press_depth = -0.001 
+                # 关键修复：10N 力控在软纸箱上会压陷非常深！必须向上抬升 3mm 作为基准，避免画笔被纸板完全包裹！
+                fixed_press_depth = -0.003
                 if wp['phase'] in ['draw', 'touch_down']:
                     target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief + macro_z_shift
                 else:
