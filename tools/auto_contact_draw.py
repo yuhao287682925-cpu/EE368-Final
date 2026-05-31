@@ -235,11 +235,11 @@ class AutoContactDrawer:
             rate.sleep()
         
         if contact_detected:
-            rospy.loginfo("⬆️ 执行就近重力校准：抬升 15mm 脱离接触...")
+            rospy.loginfo("⬆️ 执行就近重力校准：微抬 3mm 脱离接触...")
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
-            lift_cmd.twist.linear_z = 0.015 # 15mm/s 抬升
-            for _ in range(40): # 抬升 1.0秒，即 15mm
+            lift_cmd.twist.linear_z = 0.010 # 10mm/s 抬升
+            for _ in range(12): # 抬升约 0.3秒，即 3mm
                 self.vel_pub.publish(lift_cmd)
                 rospy.sleep(0.025)
             
@@ -247,11 +247,11 @@ class AutoContactDrawer:
                 self.vel_pub.publish(stop_cmd)
                 rospy.sleep(0.025)
                 
-            rospy.loginfo("⏸️ 重新执行高精度就近零点校准 (1.5秒)...")
+            rospy.loginfo("⏸️ 重新执行高精度就近零点校准 (0.8秒)...")
             self.calibrated = False
             self.calibration_samples = []
             self.torque_calibration_samples = []
-            rospy.sleep(1.5)
+            rospy.sleep(0.8)
             
             while not self.calibrated and not rospy.is_shutdown():
                 rospy.sleep(0.1)
