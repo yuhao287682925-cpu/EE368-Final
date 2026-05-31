@@ -21,6 +21,7 @@
 ### 2. 轨迹生成与绘图算法 (`trajectory/`)
 
 * **`cube_circle_trajectory.py`**：生成用于测试绘制的几何轨迹（如圆形、星形、正方形等），保存为 `.csv` 航点文件。
+  * **操作方法**：直接在终端运行 `python trajectory/cube_circle_trajectory.py`，程序会自动生成包含目标坐标和法向的各种形状航点文件（如 `star_8cm.csv`）。
 * **`plot_trajectory_3d.py`**：三维空间下的轨迹可视化工具。
 
 ---
@@ -49,10 +50,19 @@ python3 tools/force_z_monitor.py
 
 ### 第三步：执行自动对刀与定深绘制 (新终端)
 
-传递轨迹 CSV 文件，启动主程序：
+我们推荐使用带有日志与误差分析的最新 `_with_log` 脚本。传递轨迹 CSV 文件，启动相应主程序：
 
+**选项 A：在水平桌面/顶面绘制**
 ```bash
-python3 tools/auto_contact_draw.py trajectory/star_8cm.csv
+python3 tools/auto_contact_draw_with_log.py trajectory/star_8cm.csv
+```
+
+**选项 B：在垂直侧面（-Y法向）绘制**
+```bash
+# 必须先执行姿态对齐，强制转动手腕水平朝向 -Y
+python3 tools/align_wrist_side.py
+# 姿态就绪后，执行侧面主程序
+python3 tools/side_contact_draw_with_log.py trajectory/star_8cm.csv
 ```
 
 主程序将自动执行以下操作：
