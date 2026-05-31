@@ -239,7 +239,7 @@ class AutoContactDrawer:
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
             lift_cmd.twist.linear_z = 0.010 # 10mm/s 抬升
-            for _ in range(12): # 抬升约 0.3秒，即 3mm
+            for _ in range(20): # 抬升约 0.5秒，即 5mm
                 self.vel_pub.publish(lift_cmd)
                 rospy.sleep(0.025)
             
@@ -459,10 +459,8 @@ class AutoContactDrawer:
                         cmd.twist.linear_x = 0.0
                         cmd.twist.linear_y = 0.0
                 else:
-                    # 绘制阶段：以 z_nominal + z_offset 为目标高度做位置追踪
-                    target_z = wp['z_nominal'] + self.z_offset
-                    dz = target_z - self.current_z
-                    cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.015, 0.015)
+                    # 绘制阶段：锁定 Z 高度，防止摩擦力和位置控制器抛起Z导致抬升
+                    cmd.twist.linear_z = 0.0
                     
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
