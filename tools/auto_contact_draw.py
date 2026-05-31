@@ -156,13 +156,16 @@ class AutoContactDrawer:
                 rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Z Bias): {self.fz_bias:.2f} N")
             return
             
-        # 估计末端 Z 轴向力（减去零点偏差并取绝对值）
-        self.current_fz = abs(raw_fz - self.fz_bias)
-        
-        # 在空闲悬空且静止状态下进行温漂自动去皮（超低通偏置更新）
-        if self.state == FREE_SPACE and self.is_static and self.current_fz < 2.0:
-            self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * raw_fz
-            self.current_fz = abs(raw_fz - self.fz_bias)
+        if not hasattr(self, 'fz_bias'):
+            self.fz_bias = self.raw_fz
+            self.current_fz = 0.0
+        else:
+            if hasattr(self, 'frozen_fz_bias'):
+                raw_net = abs(self.raw_fz - self.frozen_fz_bias)
+                self.current_fz = 0.8 * self.current_fz + 0.2 * raw_net
+            else:
+                self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * raw_fz
+                self.current_fz = abs(raw_fz - self.fz_bias)
             
             
         self.force_fz_pub.publish(Float64(self.current_fz))
@@ -261,6 +264,7 @@ class AutoContactDrawer:
                         self.send_cartesian_velocity(0.0, 0.0, 0.0)
                         rospy.sleep(0.005)
                     contact_detected = True
+                    self.frozen_fz_bias = local_fz_bias
                     break
             else:
                 if loop_cnt % 15 == 0:
@@ -392,12 +396,7 @@ class AutoContactDrawer:
         
         rospy.loginfo("✍️ 寻面完成，开始启动高频速度伺服纯物理贴合盲探绘图...")
         
-        # --- 阶段 2：正式绘制 (盲探避障绘制 Phase 2: Kinematic Woodpecker) ---
-        z_offset_relief = 0.0  # 单向安全泄压补偿量
-        relief_cooldown = 0    # 停滞等待帧数
-        stuck_cnt = 0          # 卡死连续帧数
-        k_pos = 1.0            # 刚度系数，保持较快速度
-        
+        # --- 阶段 2：正式绘制 (纯力控阻抗跟随) ---
         for i, wp in enumerate(aligned_waypoints):
             if rospy.is_shutdown():
                 break
@@ -405,114 +404,48 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            prev_servo_x = self.current_x
-            prev_servo_y = self.current_y
-            
-            actual_speed = 0.0
-            expected_speed = 0.0
-            
             while not rospy.is_shutdown():
                 dx = target_x - self.current_x
                 dy = target_y - self.current_y
                 dist_to_target = math.hypot(dx, dy)
                 
-                if dist_to_target < 0.001: # 允许误差极大幅度缩小至 1mm，必须走到当前点才允许下一个点
+                if dist_to_target < 0.001:
                     break
                     
-                # 1. 速度生成与运动学防卡死检测
-                movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
-                actual_speed = movement / dt if dt > 0 else 0.0
-                
-                # 【全功率恒速推土机】计算
-                max_speed = 0.035  # 巡航限速 35mm/s
-                k_pos_near = 6.0   # 靠近目标点时的高刚度收敛系数
-                
+                # 1. 水平速度生成
+                max_speed = 0.035
+                k_pos_near = 6.0
                 cmd_vx_raw = k_pos_near * dx
                 cmd_vy_raw = k_pos_near * dy
                 v_mag = math.hypot(cmd_vx_raw, cmd_vy_raw)
                 
                 if v_mag > max_speed:
-                    # 距离较远，处于恒速推土机模式 (饱和截断以维持直线方向)
                     scale = max_speed / v_mag
                     cmd_vx = cmd_vx_raw * scale
                     cmd_vy = cmd_vy_raw * scale
                 else:
-                    # 距离极近 (<5mm左右)，转为高刚度P控制，确保精准收敛至 1mm 不抖动
                     cmd_vx = cmd_vx_raw
                     cmd_vy = cmd_vy_raw
                     
-                expected_speed = math.hypot(cmd_vx, cmd_vy)
-                
+                # 2. 垂直阻抗力控与高度跟随
                 if wp['phase'] in ['draw', 'touch_down']:
-                    # 只要预期下发速度大于 5mm/s 且不在抬升冷却期，就启用防戳破卡死检测
-                    if expected_speed > 0.005 and relief_cooldown == 0:
-                        # 恢复瞬时重置机制，过滤掉由于电机刚启动/转向时的加速度迟滞导致的“假受阻”
-                        if actual_speed < 0.25 * expected_speed or actual_speed < 0.002:
-                            stuck_cnt += 1
-                        else:
-                            stuck_cnt = 0
-                    else:
-                        stuck_cnt = 0
+                    target_fz = 7.0 # 目标下压力 7N
+                    k_f = 0.006 # 阻抗系数：每 1N 误差转换为 6mm/s 补偿速度
+                    fz_error = target_fz - self.current_fz
+                    cmd_vz = -k_f * fz_error
+                    # 速度硬限幅，最高允许 30mm/s 柔顺跟进或退缩
+                    cmd_vz = np.clip(cmd_vz, -0.03, 0.03)
                 else:
-                    stuck_cnt = 0
-                    
-                prev_servo_x = self.current_x
-                prev_servo_y = self.current_y
-                
-                # 2. 状态机转移逻辑
-                if wp['phase'] in ['draw', 'touch_down']:
-                    if stuck_cnt > 8: # 必须连续卡死 8 帧 (0.2秒)，确保是真的陷入了坑洼，而不是在加速
-                        z_offset_relief += 0.0035 # 考虑到笔尖形变缓冲，大幅拔高 3.5mm 以确保笔尖完全脱离障碍物
-                        z_offset_relief = min(z_offset_relief, 0.015) # 最大允许拔高 15mm
-                        relief_cooldown = 10 # 停滞 10 帧 (0.25秒)，确保有时间完成物理拔出
-                        stuck_cnt = 0
-                        rospy.logwarn(f"⚠️ 物理受阻 (Actual/Exp={actual_speed:.3f}/{expected_speed:.3f})，触发盲探极速抬笔！")
-                else:
-                    # 提笔移动阶段，清空状态
-                    z_offset_relief = 0.0
-                    relief_cooldown = 0
-                    stuck_cnt = 0
-                
-                # 3. 目标高度计算
-                fixed_press_depth = 0.001  # 默认固定下压深度缩小至 1mm，因为寻面 15N 时纸箱已被一定程度压缩
-                if wp['phase'] in ['draw', 'touch_down']:
-                    target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief
-                else:
-                    target_z = wp['z_nominal']
-                    
-                dz = target_z - self.current_z
-                
-                # 4. 指令生成与状态执行
-                if relief_cooldown > 0:
-                    relief_cooldown -= 1
-                    # 停滞状态下，强制水平静止
-                    cmd_vx = 0.0
-                    cmd_vy = 0.0
-                    # 停滞状态依然允许极速向上
-                else:
-                    # 正常移动，并极速下压恢复接触 (40mm/s，缩短跳笔空白期)
-                    if wp['phase'] in ['draw', 'touch_down']:
-                        z_offset_relief -= 0.040 * dt
-                        z_offset_relief = max(0.0, z_offset_relief)
-                        
-                # Z轴改为“动态非对称刚度”：兼顾起步轻柔防戳与避障极速恢复
-                if dz > 0:
-                    # 需要向上抬升 (拔出)
-                    cmd_vz = np.clip(8.0 * dz, 0.0, 0.05) # 极速拔出，最高 50mm/s
-                else:
-                    # 需要向下压入 (下探与恢复)
-                    if z_offset_relief > 0.0001:
-                        # 正在进行避障后的恢复下压，允许高速猛扎以防断墨太长
-                        cmd_vz = np.clip(4.0 * dz, -0.04, 0.0) # 快速恢复，最高 40mm/s
-                    else:
-                        # 正常起步贴合纸面，轻柔慢压防止戳破纸箱
-                        cmd_vz = np.clip(1.0 * dz, -0.01, 0.0) # 轻柔贴合，最高 10mm/s
+                    # Hover 阶段，使用位移控制保持在 1.5cm 空中
+                    hover_z = contact_z + 0.015
+                    dz = hover_z - self.current_z
+                    cmd_vz = np.clip(5.0 * dz, -0.05, 0.05)
                 
                 # 直接通过自研关节速度映射下发到底层
                 self.send_cartesian_velocity(cmd_vx, cmd_vy, cmd_vz)
                 rate.sleep()
                 
-            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 位移状态: {actual_speed:.3f}/{expected_speed:.3f} | Relief: {z_offset_relief:.4f}m")
+            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 当前力: {self.current_fz:.2f}N | 目标力: 7.00N")
             
         # 5. 绘制结束，到达终点后稍作停顿，平息机械臂末端抖动
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
