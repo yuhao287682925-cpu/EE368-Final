@@ -451,13 +451,17 @@ class AutoContactDrawer:
                 cmd.twist.linear_x = np.clip(v_x, -0.04, 0.04)
                 cmd.twist.linear_y = np.clip(v_y, -0.04, 0.04)
                 
-                # Z轴以位置误差作为绝对主控
-                cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.025, 0.025)
-                
-                if phase not in ['draw', 'touch_down'] and dz > 0.002:
-                    # 抬笔移动时强制锁死水平方向，防划伤
-                    cmd.twist.linear_x = 0.0
-                    cmd.twist.linear_y = 0.0
+                if phase not in ['draw', 'touch_down']:
+                    # 抬笔移动阶段：用位置误差主控 Z，快速到达目标高度
+                    dz = wp['z_nominal'] - self.current_z
+                    cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.025, 0.025)
+                    # 明显抬升时锁死水平方向
+                    if dz > 0.002:
+                        cmd.twist.linear_x = 0.0
+                        cmd.twist.linear_y = 0.0
+                else:
+                    # 绘制阶段：移动时严格锁定 Z，防止将摩擦力误判为据面抬升
+                    cmd.twist.linear_z = 0.0
                     
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
