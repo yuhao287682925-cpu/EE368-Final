@@ -257,7 +257,7 @@ class AutoContactDrawer:
                 rospy.sleep(0.1)
                 
             rospy.loginfo("⬇️ 二次轻柔下探...")
-            down_cmd.twist.linear_z = -0.005 # 非常轻柔地下探 5mm/s
+            down_cmd.twist.linear_z = -0.003 # 极慢速下探 3mm/s，防止第一下过深
             recent_forces.clear()
             contact_detected_again = False
             loop_cnt = 0
@@ -270,7 +270,7 @@ class AutoContactDrawer:
                     
                 # 屏蔽前 0.5 秒加速抖动
                 if loop_cnt > 20:
-                    if len(recent_forces) >= 5 and all(f >= 2.0 for f in recent_forces): # 二次下探阈值恢复为安全的 2.0N
+                    if len(recent_forces) >= 5 and all(f >= 1.2 for f in recent_forces): # 在 3mm/s 极慢速下，1.2N 即可稳妥确认接触
                         rospy.loginfo("🟢 二次接触锁定！")
                         for _ in range(10):
                             self.vel_pub.publish(stop_cmd)
@@ -475,14 +475,14 @@ class AutoContactDrawer:
                 
                 static_fz = self.current_fz
                 
-                # 辅助力控：我们不再产生垂直速度去“追”力，而是宏观地修改 z_offset（给下一个点的主控高度做参考）
+                # 辅助力控：基于静止受力调整补偿量 z_offset
                 if static_fz > 5.5:
-                    self.z_offset += 0.0008  # 压力偏大，将下一刻的全局绘制高度抬起 0.8mm
-                elif static_fz < 2.0:
-                    self.z_offset -= 0.0008  # 压力偏小，将下一刻的全局绘制高度下降 0.8mm
+                    self.z_offset += 0.0005  # 压力偏大，缓慢抬升 0.5mm
+                elif static_fz < 2.5:
+                    self.z_offset -= 0.0010  # 压力偏小（有悬空风险），快速下压 1.0mm
                     
-                # 限制最大补偿基准，防止彻底穿模失控 (最多补偿 8mm)
-                self.z_offset = np.clip(self.z_offset, -0.008, 0.008)
+                # 【核心物理锁】限制最大补偿基准：允许深追 10mm 应对塌陷，但绝不允许抬升超过初始纸面的 1mm，彻底断绝悬空可能！
+                self.z_offset = np.clip(self.z_offset, -0.010, 0.001)
                 
             if i % 5 == 0 or i == len(aligned_waypoints) - 1:
                 rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fz: {self.current_fz:.2f}N | 高度 Z: {self.current_z:.4f}m")
