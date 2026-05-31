@@ -233,7 +233,10 @@ class AutoContactDrawer:
             if len(recent_forces) > verify_size:
                 recent_forces.pop(0)
                 
-            if loop_cnt > 60:
+            if loop_cnt <= 60:
+                # 0~1.5秒：平滑加速到 5mm/s，极大幅度减小启动瞬间的巨大惯性力矩冲击
+                down_speed = -0.005 * (loop_cnt / 60.0)
+            else:
                 # 动态减速机制 (阻抗控制)
                 if current_net_fz > 2.0:
                     speed_factor = max(0.0, (10.0 - current_net_fz) / 8.0)
@@ -249,11 +252,10 @@ class AutoContactDrawer:
                         rospy.sleep(0.01)
                     contact_detected = True
                     break
-            else:
-                down_speed = -0.005
-                if loop_cnt % 15 == 0:
-                    rospy.loginfo("⏳ 启动加速平稳期，屏蔽接触判定...")
-                    
+            # 不再使用 else: down_speed = -0.005，因为 loop_cnt <= 60 已经处理了 soft start
+            if loop_cnt % 15 == 0 and loop_cnt <= 60:
+                rospy.loginfo(f"⏳ 启动平滑加速期 ({down_speed:.4f}m/s)，屏蔽接触判定...")
+                
             self.send_cartesian_velocity(0.0, 0.0, down_speed)
             rate.sleep()
             rospy.sleep(0.5) # 等待彻底静止
