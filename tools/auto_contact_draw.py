@@ -475,14 +475,14 @@ class AutoContactDrawer:
                 
                 static_fz = self.current_fz
                 
-                # 辅助力控：基于静止受力调整补偿量 z_offset
-                if static_fz > 5.5:
-                    self.z_offset += 0.0005  # 压力偏大，缓慢抬升 0.5mm
-                elif static_fz < 2.5:
-                    self.z_offset -= 0.0010  # 压力偏小（有悬空风险），快速下压 1.0mm
+                # 辅助力控：只允许向下追，绝不抬升
+                # 初次由 3mm/s 下探已确认精确接触点，应当信任这个高度
+                if static_fz < 2.5:
+                    self.z_offset -= 0.0010  # 压力偏小或悬空，快速下压 1.0mm
+                # 如果力偏大，不补偿、直接信任初始探面高度，防止抬升悬空
                     
-                # 【核心物理锁】限制最大补偿基准：允许深追 10mm 应对塌陷，但绝不允许抬升超过初始纸面的 1mm，彻底断绝悬空可能！
-                self.z_offset = np.clip(self.z_offset, -0.010, 0.001)
+                # 【严格物理锁】上限为 0：绝对不允许抬升，只允许深追 10mm
+                self.z_offset = np.clip(self.z_offset, -0.010, 0.000)
                 
             if i % 5 == 0 or i == len(aligned_waypoints) - 1:
                 rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fz: {self.current_fz:.2f}N | 高度 Z: {self.current_z:.4f}m")
