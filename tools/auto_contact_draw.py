@@ -200,50 +200,62 @@ class AutoContactDrawer:
         self.vel_pub.publish(cmd)
 
     def run_auto_touchdown(self):
-        rospy.loginfo("🚀 开始沿 -Z 轴纯运动学软着陆寻面...")
+        rospy.loginfo("🚀 开始沿 -Z 轴阻抗软着陆寻面...")
         self.state = FREE_SPACE
         
-        rospy.sleep(1.5) # 等待机械臂平稳
+        rospy.sleep(1.5)
         
+        self.calibrated = False
+        self.calibration_samples = []
+        while not self.calibrated and not rospy.is_shutdown():
+            rospy.sleep(0.1)
+            
         rate = rospy.Rate(40)
-        dt = 0.025
         contact_detected = False
         loop_cnt = 0
-        stuck_cnt = 0
+        recent_forces = []
+        verify_size = 4
+        
+        local_fz_bias = self.fz_bias
         
         while not rospy.is_shutdown():
             loop_cnt += 1
-            prev_z = self.current_z
             
-            # 沿 -Z 方向恒速前探 5mm/s
-            self.send_cartesian_velocity(0.0, 0.0, -0.005)
-            rate.sleep()
-            
-            # 前 1.5 秒为加速平稳期，屏蔽检测
-            if loop_cnt > 60:
-                # 使用物理编码器反馈计算真实 Z 轴速度
-                actual_speed = abs(self.current_z - prev_z) / dt
+            raw_f = self.raw_fz
+            if loop_cnt < 60:
+                local_fz_bias = 0.90 * local_fz_bias + 0.10 * raw_f
+            elif abs(raw_f - local_fz_bias) < 5.0:
+                local_fz_bias = 0.98 * local_fz_bias + 0.02 * raw_f
                 
-                # 预期速度为 0.005 m/s，若实际速度跌破 0.001 m/s (20%)，即判定为物理碰壁失速！
-                if actual_speed < 0.001:
-                    stuck_cnt += 1
+            current_net_fz = abs(raw_f - local_fz_bias)
+            
+            recent_forces.append(current_net_fz)
+            if len(recent_forces) > verify_size:
+                recent_forces.pop(0)
+                
+            if loop_cnt > 60:
+                # 动态减速机制 (阻抗控制)
+                if current_net_fz > 2.0:
+                    speed_factor = max(0.0, (8.0 - current_net_fz) / 6.0)
+                    down_speed = -0.005 * speed_factor
                 else:
-                    stuck_cnt = 0
+                    down_speed = -0.005
                     
-                # 连续 4 帧（0.1秒）确认失速
-                if stuck_cnt >= 4:
-                    rospy.loginfo(f"🟢 运动学失速触发！精准判定触及桌面纸板 (当前移速: {actual_speed:.4f} m/s)")
-                    # 立即发送 5 次 0 速度，确保驱动层彻底刹停
+                # 触发阈值从 10N 降低到 6N，防止顶面软纸箱被压塌
+                if len(recent_forces) >= verify_size and all(f >= 6.0 for f in recent_forces):
+                    rospy.loginfo(f"🟢 判定触及桌面纸板！接触力: {current_net_fz:.2f} N")
                     for _ in range(5):
                         self.send_cartesian_velocity(0.0, 0.0, 0.0)
                         rospy.sleep(0.01)
                     contact_detected = True
                     break
             else:
+                down_speed = -0.005
                 if loop_cnt % 15 == 0:
                     rospy.loginfo("⏳ 启动加速平稳期，屏蔽接触判定...")
-            
-        if contact_detected:
+                    
+            self.send_cartesian_velocity(0.0, 0.0, down_speed)
+            rate.sleep()
             rospy.sleep(0.5) # 等待彻底静止
             
             # 使用高精度底层正运动学估算的绝对坐标 (防止 MoveIt 获取超时)
