@@ -415,132 +415,89 @@ class AutoContactDrawer:
             if rospy.is_shutdown():
                 break
             
-            quat = get_orientation_for_normal(wp['nx'], wp['ny'], wp['nz'])
-            
-            # 位置控制的目标点 XY
+            phase = wp['phase']
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 0.8  # 降低刚度至 0.8，减慢运动速度确保每一个点误差极小
+            k_pos = 0.8  # XY运动刚度
             
-            stuck_cnt = 0
-            prev_servo_x = self.current_x
-            prev_servo_y = self.current_y
-            
+            # === 阶段 1：水平盲走 (锁定 Z) ===
             while not rospy.is_shutdown():
-                # 强制在非绘制/非下探阶段使状态回到 FREE_SPACE 状态
-                if wp['phase'] not in ['draw', 'touch_down']:
-                    if self.state != FREE_SPACE:
-                        self.state = FREE_SPACE
-                        self.state_counter = 0
-                        rospy.loginfo("🔵 阶段转换: 强制切换至 FREE_SPACE")
-                
-                target_z = wp['z_nominal'] + self.z_offset
-                
                 dx = target_x - self.current_x
                 dy = target_y - self.current_y
-                dz = target_z - self.current_z
                 
                 dist_to_target = math.hypot(dx, dy)
                 if dist_to_target < 0.001:
-                    break
-                
-                draw_force_window.append(self.current_fz)
-                if len(draw_force_window) > draw_window_size:
-                    draw_force_window.pop(0)
-                fz_filtered = np.mean(draw_force_window) if len(draw_force_window) >= draw_window_size else self.current_fz
-                
-                # 状态机跳转
-                if self.state == FREE_SPACE:
-                    if fz_filtered > 3.5:
-                        self.state_counter += 1
-                        if self.state_counter >= 6:
-                            self.state = SOFT_CONTACT
-                            self.state_counter = 0
-                            rospy.loginfo(f"🟠 状态转移: FREE_SPACE -> SOFT_CONTACT (Fz={fz_filtered:.2f}N)")
-                    else:
-                        self.state_counter = 0
-                elif self.state == SOFT_CONTACT:
-                    if fz_filtered > 5.0:
-                        self.state_counter += 1
-                        if self.state_counter >= 6:
-                            self.state = HARD_CONTACT
-                            self.state_counter = 0
-                            rospy.loginfo(f"🔴 状态转移: SOFT_CONTACT -> HARD_CONTACT (Fz={fz_filtered:.2f}N)")
-                    elif fz_filtered < 2.5:
-                        self.state = FREE_SPACE
-                        self.state_counter = 0
-                        draw_force_window = []
-                        rospy.loginfo(f"🔵 状态转移: SOFT_CONTACT -> FREE_SPACE (完全悬空, Fz={fz_filtered:.2f}N)")
-                    else:
-                        self.state_counter = 0
-                elif self.state == HARD_CONTACT:
-                    if fz_filtered < 3.5:
-                        self.state_counter += 1
-                        if self.state_counter >= 8:
-                            self.state = SOFT_CONTACT
-                            self.state_counter = 0
-                            rospy.loginfo(f"🟠 状态转移: HARD_CONTACT -> SOFT_CONTACT (力不足退回, Fz={fz_filtered:.2f}N)")
-                    else:
-                        self.state_counter = 0
-                
-                # 卡阻检测
-                if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.005:
-                    movement = math.hypot(self.current_x - prev_servo_x, self.current_y - prev_servo_y)
-                    if movement < 0.0003:
-                        stuck_cnt += 1
-                    else:
-                        stuck_cnt = max(0, stuck_cnt - 1)
-                else:
-                    stuck_cnt = 0
-                
-                prev_servo_x = self.current_x
-                prev_servo_y = self.current_y
-                
-                # 动态调整目标压力
-                if self.state == HARD_CONTACT and stuck_cnt >= 8:
-                    self.target_force = max(2.5, self.base_target_force - 0.44 * (stuck_cnt - 7))
-                    if stuck_cnt % 8 == 0:
-                        rospy.logwarn(f"⚠️ 末端可能卡阻 (stuck_cnt={stuck_cnt})，降低目标压力至 {self.target_force:.2f}N")
-                else:
-                    self.target_force = self.base_target_force
-                
-                # 力控律
-                z_offset_val, v_z_comp = self.update_force_control(fz_filtered, self.state, dt)
+                    break # 水平到位
                 
                 cmd = TwistCommand()
                 cmd.reference_frame = 3
-                cmd.duration = 0
                 
                 cmd.twist.linear_x = np.clip(k_pos * dx, -0.03, 0.03)
                 cmd.twist.linear_y = np.clip(k_pos * dy, -0.03, 0.03)
                 
-                if self.state == FREE_SPACE:
+                if phase not in ['draw', 'touch_down']:
+                    # 抬笔移动时，向目标高度移动
                     target_z_nominal = wp['z_nominal']
                     dz_nominal = target_z_nominal - self.current_z
                     cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.015, 0.015)
                     
-                    # 严格执行用户要求：抬升时尽量控制水平方向不动
-                    # 如果 Z 轴正在明显抬升 (差值 > 2mm)，强制锁死 X/Y 速度
+                    # 明显抬升时，强制锁死 X/Y 速度
                     if dz_nominal > 0.002:
                         cmd.twist.linear_x = 0.0
                         cmd.twist.linear_y = 0.0
-                elif self.state == SOFT_CONTACT:
-                    cmd.twist.linear_z = -0.002
-                elif self.state == HARD_CONTACT:
-                    cmd.twist.linear_z = v_z_comp
-                    if v_z_comp > 0.0:
-                        cmd.twist.linear_x = 0.0
-                        cmd.twist.linear_y = 0.0
-                
+                else:
+                    # 绘制阶段：移动时锁定Z高度，绝对不产生额外下压，防止摩擦力伪装成受力
+                    cmd.twist.linear_z = 0.0
+                    
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
                 cmd.twist.angular_z = 0.0
                 
                 self.vel_pub.publish(cmd)
                 rate.sleep()
-            
-            rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 状态: {self.state} | Fz: {self.current_fz:.2f}N | Offset Z: {self.z_offset:.4f}m")
+                
+            # === 阶段 2：刹车静止 ===
+            stop_cmd = TwistCommand()
+            stop_cmd.reference_frame = 3
+            for _ in range(3): # 停顿约 0.075 秒，等待电机摩擦力耗散
+                self.vel_pub.publish(stop_cmd)
+                rospy.sleep(0.025)
+                
+            # === 阶段 3：静止测力与微调 ===
+            if phase in ['draw', 'touch_down']:
+                adjust_cnt = 0
+                while not rospy.is_shutdown():
+                    adjust_cnt += 1
+                    static_fz = self.current_fz
+                    
+                    if 4.0 <= static_fz <= 6.5:
+                        # 压力在完美区间，停止调整
+                        break
+                        
+                    adjust_cmd = TwistCommand()
+                    adjust_cmd.reference_frame = 3
+                    adjust_cmd.twist.linear_x = 0.0
+                    adjust_cmd.twist.linear_y = 0.0
+                    
+                    if static_fz < 4.0:
+                        # 受力不足，轻微下探
+                        adjust_cmd.twist.linear_z = -0.001
+                    elif static_fz > 6.5:
+                        # 受力过大，明显抬起
+                        adjust_cmd.twist.linear_z = 0.003
+                        
+                    self.vel_pub.publish(adjust_cmd)
+                    rate.sleep()
+                    
+                    if adjust_cnt > 12: # 最多微调约 0.3秒，防止卡死
+                        break
+                
+                # 微调结束后彻底停住 Z
+                self.vel_pub.publish(stop_cmd)
+                
+            if i % 5 == 0 or i == len(aligned_waypoints) - 1:
+                rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fz: {self.current_fz:.2f}N | 高度 Z: {self.current_z:.4f}m")
         
         # 绘制结束
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
