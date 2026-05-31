@@ -8,7 +8,7 @@ import rospy
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import Pose, Point, Quaternion
 from std_msgs.msg import Float64
-from kortex_driver.msg import TwistCommand
+from kortex_driver.msg import TwistCommand, Base_JointSpeeds, JointSpeed
 
 # 动态添加路径以兼容各种运行方式导入 jacobian
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -103,8 +103,8 @@ class AutoContactDrawer:
         # 订阅关节状态话题以实时进行力矩估计与位姿解算
         rospy.Subscriber("/my_gen3_lite/joint_states", JointState, self.joint_states_callback)
         
-        # 控制指令发布话题
-        self.vel_pub = rospy.Publisher("/my_gen3_lite/in/cartesian_velocity", TwistCommand, queue_size=1)
+        # 控制指令发布话题 (改为底层的关节速度控制)
+        self.vel_pub = rospy.Publisher("/my_gen3_lite/in/joint_velocity", Base_JointSpeeds, queue_size=1)
         self.force_fz_pub = rospy.Publisher("/force_control/auto/estimated_fz", Float64, queue_size=1)
         self.z_offset_pub = rospy.Publisher("/force_control/auto/z_offset", Float64, queue_size=1)
         
@@ -126,6 +126,9 @@ class AutoContactDrawer:
         if len(thetas) < 6 or len(torques) < 6 or len(velocities) < 6:
             return
             
+        # 0. 记录当前关节角度供逆解使用
+        self.current_thetas = thetas
+        
         # 1. 求解末端正运动学位置
         tool_pose = self.arm_model.forward_kinematics(thetas)
         self.current_x = tool_pose[0]
@@ -161,7 +164,40 @@ class AutoContactDrawer:
             self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * raw_fz
             self.current_fz = abs(raw_fz - self.fz_bias)
             
+            
         self.force_fz_pub.publish(Float64(self.current_fz))
+
+    def send_cartesian_velocity(self, vx, vy, vz):
+        """
+        利用自研 DH 雅可比矩阵将末端线速度映射为关节角速度，完全接管底层控制
+        """
+        if not hasattr(self, 'current_thetas'):
+            return
+            
+        # 1. 计算当前雅可比矩阵
+        J = self.arm_model.basic_jacobian(self.current_thetas)
+        
+        # 2. 构建目标笛卡尔速度向量 (仅平移，保证笔尖姿态绝对不变)
+        V_cart = np.array([vx, vy, vz, 0.0, 0.0, 0.0])
+        
+        # 3. 伪逆解算目标关节速度 q_dot = J_pinv * V_cart
+        # 考虑到接近奇异点时数值不稳定，这里加一个极小的阻尼
+        J_pinv = np.linalg.pinv(J, rcond=1e-3)
+        q_dot = J_pinv.dot(V_cart)
+        
+        # 4. 安全硬限幅 (极严苛限制: 0.5 rad/s，约 28度/秒，防止奇异点暴走)
+        max_q_dot = 0.5
+        q_dot = np.clip(q_dot, -max_q_dot, max_q_dot)
+        
+        # 5. 打包并发送 JointSpeed 消息
+        cmd = Base_JointSpeeds()
+        for j in range(6):
+            speed = JointSpeed()
+            speed.joint_identifier = j
+            speed.value = q_dot[j]
+            cmd.joint_speeds.append(speed)
+            
+        self.vel_pub.publish(cmd)
 
     def run_auto_touchdown(self):
         """
@@ -182,18 +218,9 @@ class AutoContactDrawer:
             rospy.sleep(0.1)
             
         rate = rospy.Rate(40) # 40Hz
-        
-        down_cmd = TwistCommand()
-        down_cmd.reference_frame = 3 # 基座坐标系
-        down_cmd.twist.linear_z = -0.005 # -5mm/s 向下，进一步放慢速度，极大减小因电机运动带来的动态摩擦“假力”
-        
-        stop_cmd = TwistCommand()
-        stop_cmd.reference_frame = 3
-        
         contact_detected = False
         loop_cnt = 0
         
-        # 引入接触判定缓存序列 (40Hz 下 10个周期约 0.25 秒)
         recent_forces = []
         verify_size = 10
         
@@ -231,7 +258,7 @@ class AutoContactDrawer:
                     
                     # 发送 10 次 0 速度，确保驱动层刹停
                     for _ in range(10):
-                        self.vel_pub.publish(stop_cmd)
+                        self.send_cartesian_velocity(0.0, 0.0, 0.0)
                         rospy.sleep(0.005)
                     contact_detected = True
                     break
@@ -239,7 +266,8 @@ class AutoContactDrawer:
                 if loop_cnt % 15 == 0:
                     rospy.loginfo("⏳ 启动加速平稳期，屏蔽接触判定...")
                     
-            self.vel_pub.publish(down_cmd)
+            # 发送向下探速度 -5mm/s
+            self.send_cartesian_velocity(0.0, 0.0, -0.005)
             rate.sleep()
             
         if contact_detected:
@@ -455,15 +483,11 @@ class AutoContactDrawer:
                 dz = target_z - self.current_z
                 
                 # 4. 指令生成与状态执行
-                cmd = TwistCommand()
-                cmd.reference_frame = 3
-                cmd.duration = 0
-                
                 if relief_cooldown > 0:
                     relief_cooldown -= 1
                     # 停滞状态下，强制水平静止
-                    cmd.twist.linear_x = 0.0
-                    cmd.twist.linear_y = 0.0
+                    cmd_vx = 0.0
+                    cmd_vy = 0.0
                     # 停滞状态依然允许极速向上
                 else:
                     # 正常移动，并极速下压恢复接触 (40mm/s，缩短跳笔空白期)
@@ -471,9 +495,6 @@ class AutoContactDrawer:
                         z_offset_relief -= 0.040 * dt
                         z_offset_relief = max(0.0, z_offset_relief)
                         
-                    cmd.twist.linear_x = cmd_vx
-                    cmd.twist.linear_y = cmd_vy
-                    
                 # Z轴改为“动态非对称刚度”：兼顾起步轻柔防戳与避障极速恢复
                 if dz > 0:
                     # 需要向上抬升 (拔出)
@@ -487,12 +508,8 @@ class AutoContactDrawer:
                         # 正常起步贴合纸面，轻柔慢压防止戳破纸箱
                         cmd_vz = np.clip(1.0 * dz, -0.01, 0.0) # 轻柔贴合，最高 10mm/s
                 
-                cmd.twist.linear_z = cmd_vz
-                cmd.twist.angular_x = 0.0
-                cmd.twist.angular_y = 0.0
-                cmd.twist.angular_z = 0.0
-                
-                self.vel_pub.publish(cmd)
+                # 直接通过自研关节速度映射下发到底层
+                self.send_cartesian_velocity(cmd_vx, cmd_vy, cmd_vz)
                 rate.sleep()
                 
             rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 位移状态: {actual_speed:.3f}/{expected_speed:.3f} | Relief: {z_offset_relief:.4f}m")
@@ -500,37 +517,24 @@ class AutoContactDrawer:
         # 5. 绘制结束，到达终点后稍作停顿，平息机械臂末端抖动
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
         
-        pause_cmd = TwistCommand()
-        pause_cmd.reference_frame = 3
         for _ in range(40): # 停顿 1.0 秒 (40Hz)
             if rospy.is_shutdown():
                 break
-            self.vel_pub.publish(pause_cmd)
+            self.send_cartesian_velocity(0.0, 0.0, 0.0)
             rospy.sleep(0.025)
             
         rospy.loginfo("⬆️ 开始垂直抬升画笔...")
-        
-        lift_cmd = TwistCommand()
-        lift_cmd.reference_frame = 3  # 基座坐标系
-        lift_cmd.twist.linear_x = 0.0
-        lift_cmd.twist.linear_y = 0.0
-        lift_cmd.twist.linear_z = 0.03  # 以 3cm/s 速度垂直向上抬笔
-        lift_cmd.twist.angular_x = 0.0
-        lift_cmd.twist.angular_y = 0.0
-        lift_cmd.twist.angular_z = 0.0
         
         # 40Hz 频率下持续 40 次循环 (1.0 秒)，总共抬升 3.0cm
         for _ in range(40):
             if rospy.is_shutdown():
                 break
-            self.vel_pub.publish(lift_cmd)
+            self.send_cartesian_velocity(0.0, 0.0, 0.03) # 以 3cm/s 速度垂直向上抬笔
             rospy.sleep(0.025)
             
         # 发送 15 次 0 速度锁定机械臂，确保驱动层刹停
-        stop_cmd = TwistCommand()
-        stop_cmd.reference_frame = 3
         for _ in range(15):
-            self.vel_pub.publish(stop_cmd)
+            self.send_cartesian_velocity(0.0, 0.0, 0.0)
             rospy.sleep(0.01)
             
         self.move_group.stop()
