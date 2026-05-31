@@ -438,7 +438,7 @@ class AutoContactDrawer:
                     stuck_cnt = 0
                 
                 # 3. 目标高度计算
-                fixed_press_depth = 0.003  # 默认固定下压深度 3mm
+                fixed_press_depth = 0.001  # 默认固定下压深度缩小至 1mm，因为寻面 15N 时纸箱已被一定程度压缩
                 if wp['phase'] in ['draw', 'touch_down']:
                     target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief
                 else:
@@ -466,8 +466,15 @@ class AutoContactDrawer:
                     cmd.twist.linear_x = cmd_vx
                     cmd.twist.linear_y = cmd_vy
                     
-                # Z轴改为极高刚度 (8.0)，确保在触发抬笔时能像闪电一样瞬间拔出
-                cmd.twist.linear_z = np.clip(8.0 * dz, -0.05, 0.05)
+                # Z轴改为“非对称刚度”：抬起时如闪电，下压时如羽毛
+                if dz > 0:
+                    # 需要向上抬升 (拔出)
+                    cmd_vz = np.clip(8.0 * dz, 0.0, 0.05) # 极速拔出，最高 50mm/s
+                else:
+                    # 需要向下压入 (下探与恢复)
+                    cmd_vz = np.clip(1.0 * dz, -0.01, 0.0) # 轻柔下探，最高仅 10mm/s，绝不猛戳
+                
+                cmd.twist.linear_z = cmd_vz
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
                 cmd.twist.angular_z = 0.0
