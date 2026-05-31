@@ -411,6 +411,10 @@ class AutoContactDrawer:
         draw_force_window = []
         draw_window_size = 4
         
+        # 轨迹日志
+        actual_log = []
+        theo_log = []
+        
         for i, wp in enumerate(aligned_waypoints):
             if rospy.is_shutdown():
                 break
@@ -461,6 +465,11 @@ class AutoContactDrawer:
                 else:
                     # 绘制阶段：锁定 Z 高度，防止摩擦力和位置控制器抛起Z导致抬升
                     cmd.twist.linear_z = 0.0
+                    
+                # 记录高频日志
+                if phase == 'draw':
+                    actual_log.append({'x': self.current_x, 'y': self.current_y, 'z': self.current_z})
+                    theo_log.append({'x': target_x, 'y': target_y, 'z': target_z})
                     
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
@@ -528,7 +537,25 @@ class AutoContactDrawer:
             rospy.sleep(0.01)
         
         self.move_group.stop()
+        
+        # 保存轨迹记录并自动分析
+        with open('actual_executed_trajectory_position.csv', 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
+            writer.writeheader()
+            writer.writerows(actual_log)
+        with open('theo_mapped_trajectory_position.csv', 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
+            writer.writeheader()
+            writer.writerows(theo_log)
+            
+        rospy.loginfo("📊 轨迹日志已保存至 actual_executed_trajectory_position.csv 和 theo_mapped_trajectory_position.csv")
         rospy.loginfo("🎉 全自动伺服力控绘制任务圆满完成！")
+        
+        try:
+            import subprocess
+            subprocess.Popen(["python3", "tools/analyze_error.py", "--actual", "actual_executed_trajectory_position.csv", "--theo", "theo_mapped_trajectory_position.csv"])
+        except Exception as e:
+            rospy.logerr(f"启动自动分析失败: {e}")
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
