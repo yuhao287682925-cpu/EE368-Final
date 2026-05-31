@@ -40,21 +40,33 @@ raw_fz = tool_force[2]
 self.current_fz = abs(raw_fz - self.fz_bias)
 ```
 
-## Slide 4: 顶面绘制与安全控制 (Top-Down Drawing)
+## Slide 4: 顶面绘制与悬空预演去皮算法 (Top-Down Drawing & Air-Tracing Tare)
 - **主要文件**: `tools/auto_contact_draw.py`
-- **核心思想**: 将 2D 轨迹映射到水平 XY 面，通过实时监测 Z 轴法向阻力进行“安全泄压”，避免机械臂卡死。
+- **核心痛点**: 机械臂在大范围伸展运动时，自重与姿态变化会导致极大的“虚假受力漂移”，使得传统的绝对阈值力控完全失效。
+- **创新解决方案**: 采用**悬空预演去皮法 (Air-Tracing Tare)**。正式下笔前，在轨迹正上方 10mm 处预跑“空挥”一次，记录纯姿态力矩偏差；实画时实时扣除基准，提取绝对纯净的真实物理接触力 (`fz_pure`)。
 - **核心代码片段**:
 ```python
-# 动态法向安全泄压策略 (Relief Strategy)
-if wp['phase'] in ['draw', 'touch_down']:
-    if fz_filtered > 15.0 or stuck_cnt > 10:
-        z_offset_relief += 0.005 * dt  # 阻力过大，向 +Z 方向退缩
-    elif fz_filtered < 8.0:
-        z_offset_relief -= 0.002 * dt  # 阻力变小，恢复下压
-        
-# 维持固定接触深度
-depth_offset = fixed_depth - z_offset_relief
-target_z = contact_z - depth_offset 
+# 提取基准漂移力并计算纯物理挤压力
+baseline_fz = air_fz_profile[i]
+fz_pure = max(0.0, fz_filtered - baseline_fz)
+```
+
+## Slide 4.5: 提笔刹车防卡死机制 (Halt & Lift State Machine)
+- **核心思想**: 模拟人类画笔卡入坑洼时的本能反应——遇大阻力时立刻停止横向硬拽，专心往上抬笔脱困，避免机械臂卡死崩溃。
+- **核心代码片段**:
+```python
+# 状态机：遇大阻力或物理卡顿，立刻进入刹车抬升模式
+if fz_pure > 7.0 or stuck_cnt > 5:
+    in_relief_halt = True
+    z_offset_relief += 0.015 * dt # 15mm/s 极速向上拔出
+
+# 动力切断：彻底停止平面强行拖拽，保护硬件
+if in_relief_halt:
+    cmd.twist.linear_x = 0.0
+    cmd.twist.linear_y = 0.0
+else:
+    cmd.twist.linear_x = np.clip(k_pos * dx, -0.02, 0.02)
+    cmd.twist.linear_y = np.clip(k_pos * dy, -0.02, 0.02)
 ```
 
 ## Slide 5: 侧边绘制 - 姿态变换与逆向重映射 (Side-Wall Drawing)
