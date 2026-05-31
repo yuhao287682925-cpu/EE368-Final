@@ -235,9 +235,55 @@ class AutoContactDrawer:
             rate.sleep()
         
         if contact_detected:
+            rospy.loginfo("⬆️ 执行就近重力校准：抬升 10mm 脱离接触...")
+            lift_cmd = TwistCommand()
+            lift_cmd.reference_frame = 3
+            lift_cmd.twist.linear_z = 0.015 # 15mm/s 抬升
+            for _ in range(30): # 抬升约 0.75秒，即 11mm
+                self.vel_pub.publish(lift_cmd)
+                rospy.sleep(0.025)
+            
+            for _ in range(10):
+                self.vel_pub.publish(stop_cmd)
+                rospy.sleep(0.025)
+                
+            rospy.loginfo("⏸️ 重新执行高精度就近零点校准 (1.5秒)...")
+            self.calibrated = False
+            self.calibration_samples = []
+            self.torque_calibration_samples = []
+            rospy.sleep(1.5)
+            
+            while not self.calibrated and not rospy.is_shutdown():
+                rospy.sleep(0.1)
+                
+            rospy.loginfo("⬇️ 二次轻柔下探...")
+            down_cmd.twist.linear_z = -0.005 # 非常轻柔地下探 5mm/s
+            recent_forces.clear()
+            contact_detected_again = False
+            loop_cnt = 0
+            
+            while not rospy.is_shutdown():
+                loop_cnt += 1
+                recent_forces.append(self.current_fz)
+                if len(recent_forces) > 5:
+                    recent_forces.pop(0)
+                    
+                # 屏蔽前 0.5 秒加速抖动
+                if loop_cnt > 20:
+                    if len(recent_forces) >= 5 and all(f >= 2.0 for f in recent_forces): # 二次下探阈值降低为 2.0N
+                        rospy.loginfo("🟢 二次接触锁定！")
+                        for _ in range(10):
+                            self.vel_pub.publish(stop_cmd)
+                            rospy.sleep(0.005)
+                        contact_detected_again = True
+                        break
+                        
+                self.vel_pub.publish(down_cmd)
+                rate.sleep()
+                
             rospy.sleep(0.5) # 等待彻底静止
             
-            # 使用高精度底层正运动学估算的绝对坐标 (防止 MoveIt 获取超时)
+            # 使用高精度底层正运动学估算的绝对坐标
             current_pose = Pose()
             current_pose.position.x = self.current_x
             current_pose.position.y = self.current_y
@@ -473,6 +519,12 @@ class AutoContactDrawer:
                     target_z_nominal = wp['z_nominal']
                     dz_nominal = target_z_nominal - self.current_z
                     cmd.twist.linear_z = np.clip(k_pos * dz_nominal, -0.015, 0.015)
+                    
+                    # 严格执行用户要求：抬升时尽量控制水平方向不动
+                    # 如果 Z 轴正在明显抬升 (差值 > 2mm)，强制锁死 X/Y 速度
+                    if dz_nominal > 0.002:
+                        cmd.twist.linear_x = 0.0
+                        cmd.twist.linear_y = 0.0
                 elif self.state == SOFT_CONTACT:
                     cmd.twist.linear_z = -0.002
                 elif self.state == HARD_CONTACT:
@@ -507,16 +559,19 @@ class AutoContactDrawer:
         lift_cmd.reference_frame = 3
         lift_cmd.twist.linear_x = 0.0
         lift_cmd.twist.linear_y = 0.0
-        lift_cmd.twist.linear_z = 0.03
         lift_cmd.twist.angular_x = 0.0
         lift_cmd.twist.angular_y = 0.0
         lift_cmd.twist.angular_z = 0.0
         
-        for _ in range(40):
-            if rospy.is_shutdown():
-                break
-            self.vel_pub.publish(lift_cmd)
-            rospy.sleep(0.025)
+        # 严格执行用户要求：采用多段控制来进行抬升
+        # 分三段加速抬升，平滑脱离
+        for speed in [0.005, 0.015, 0.030]:
+            lift_cmd.twist.linear_z = speed
+            for _ in range(15):
+                if rospy.is_shutdown():
+                    break
+                self.vel_pub.publish(lift_cmd)
+                rospy.sleep(0.025)
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
