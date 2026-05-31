@@ -450,10 +450,9 @@ class AutoContactDrawer:
                 # 3. 目标高度计算与 Z 轴逆动力学导纳控制
                 if wp['phase'] in ['draw', 'touch_down']:
                     # 接触绘制阶段，执行纯逆动力学导纳控制
-                    # 根据 Newton-Euler 模型计算的纯外力 fz_ext 来维持 6.0N 的目标压力
-                    # 因为我们在回调中算出的 self.raw_fz 已经剥离了重力和运动惯性，这是纯纯的外力
+                    # 使用经过零点去皮和绝对值处理的 self.current_fz
                     K_force = 0.002
-                    force_error = 6.0 - self.raw_fz
+                    force_error = 6.0 - self.current_fz
                     cmd_vz = force_error * (-K_force)
                     # 软限幅防止剧烈突变
                     cmd_vz = np.clip(cmd_vz, -0.015, 0.015)

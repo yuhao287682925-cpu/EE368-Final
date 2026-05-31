@@ -437,7 +437,7 @@ class AutoContactDrawer:
                 
                 if wp['phase'] in ['draw', 'touch_down']:
                     K_force = 0.002
-                    force_error = 6.0 - self.raw_fz
+                    force_error = 6.0 - self.current_fz
                     cmd_vz = force_error * (-K_force)
                     cmd_vz = np.clip(cmd_vz, -0.015, 0.015)
                 else:
