@@ -148,10 +148,8 @@ class AutoContactDrawer:
         dt = rospy.get_time() - self.last_time
         if dt <= 0: dt = 0.001
         self.last_time = rospy.get_time()
-        thetas_dd = np.subtract(velocities, self.last_velocities) / dt
-        self.last_velocities = velocities
         
-        sim_torque = self.arm_model.get_torque(thetas, velocities, thetas_dd, [0,0,0], [0,0,0])
+        sim_torque = self.arm_model.get_torque(thetas, [0.0]*6, [0.0]*6, [0,0,0], [0,0,0])
         ext_torque = np.subtract(torques, sim_torque)
         
         # 2. 求解基础雅可比矩阵并计算估计力
@@ -175,8 +173,12 @@ class AutoContactDrawer:
                 rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Z Bias): {self.fz_bias:.2f} N")
             return
             
+        if not hasattr(self, 'filtered_raw_fz'):
+            self.filtered_raw_fz = raw_fz
+        self.filtered_raw_fz = 0.85 * self.filtered_raw_fz + 0.15 * raw_fz
+        
         # 估计末端 Z 轴向力（减去零点偏差并取绝对值）
-        self.current_fz = abs(raw_fz - self.fz_bias)
+        self.current_fz = abs(self.filtered_raw_fz - self.fz_bias)
         
         # 在空闲悬空且静止状态下进行温漂自动去皮（超低通偏置更新）
         if self.state == FREE_SPACE and self.is_static and self.current_fz < 2.0:

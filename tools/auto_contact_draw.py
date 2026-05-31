@@ -150,11 +150,10 @@ class AutoContactDrawer:
         dt = rospy.get_time() - self.last_time
         if dt <= 0: dt = 0.001
         self.last_time = rospy.get_time()
-        thetas_dd = np.subtract(velocities, self.last_velocities) / dt
-        self.last_velocities = velocities
         
-        # sim_torque 是悬空理论所需扭矩 (重力 + 惯性)
-        sim_torque = self.arm_model.get_torque(thetas, velocities, thetas_dd, [0,0,0], [0,0,0])
+        # 极慢速绘制下，动态惯性和科里奥利力极小，但关节速度微分带来的噪声极大
+        # 直接使用零速度和零加速度计算纯准静态重力补偿，能彻底消除运动时的假受力毛刺
+        sim_torque = self.arm_model.get_torque(thetas, [0.0]*6, [0.0]*6, [0,0,0], [0,0,0])
         
         # ext_torque 是被提取出来的纯粹外部干涉力矩
         ext_torque = np.subtract(torques, sim_torque)
@@ -180,8 +179,13 @@ class AutoContactDrawer:
                 rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Z Bias): {self.fz_bias:.2f} N")
             return
             
+        # 低通滤波平滑接触力，防止偶尔的通讯毛刺引发抬升跳动
+        if not hasattr(self, 'filtered_raw_fz'):
+            self.filtered_raw_fz = raw_fz
+        self.filtered_raw_fz = 0.85 * self.filtered_raw_fz + 0.15 * raw_fz
+        
         # 估计末端 Z 轴向力（减去零点偏差并取绝对值）
-        self.current_fz = abs(raw_fz - self.fz_bias)
+        self.current_fz = abs(self.filtered_raw_fz - self.fz_bias)
         
         # 在空闲悬空且静止状态下进行温漂自动去皮（超低通偏置更新）
         if self.state == FREE_SPACE and self.is_static and self.current_fz < 2.0:
