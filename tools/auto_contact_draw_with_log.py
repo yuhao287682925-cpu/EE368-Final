@@ -440,9 +440,9 @@ class AutoContactDrawer:
                 # 2. 状态机转移逻辑
                 if wp['phase'] in ['draw', 'touch_down']:
                     if stuck_cnt > 8: # 必须连续卡死 8 帧 (0.2秒)，确保是真的陷入了坑洼，而不是在加速
-                        z_offset_relief += 0.0015 # 微调拔高 1.5mm (减小跳笔幅度)
-                        z_offset_relief = min(z_offset_relief, 0.010) # 最大允许拔高 10mm
-                        relief_cooldown = 6 # 极短停滞 6 帧 (0.15秒)，让笔尖快速越过坑洼边缘即可
+                        z_offset_relief += 0.0035 # 考虑到笔尖形变缓冲，大幅拔高 3.5mm 以确保笔尖完全脱离障碍物
+                        z_offset_relief = min(z_offset_relief, 0.015) # 最大允许拔高 15mm
+                        relief_cooldown = 10 # 停滞 10 帧 (0.25秒)，确保有时间完成物理拔出
                         stuck_cnt = 0
                         rospy.logwarn(f"⚠️ 物理受阻 (Actual/Exp={actual_speed:.3f}/{expected_speed:.3f})，触发盲探极速抬笔！")
                 else:
@@ -472,21 +472,26 @@ class AutoContactDrawer:
                     cmd.twist.linear_y = 0.0
                     # 停滞状态依然允许极速向上
                 else:
-                    # 正常移动，并极速下压恢复接触 (25mm/s，把断墨距离压缩到最短)
+                    # 正常移动，并极速下压恢复接触 (40mm/s，缩短跳笔空白期)
                     if wp['phase'] in ['draw', 'touch_down']:
-                        z_offset_relief -= 0.025 * dt
+                        z_offset_relief -= 0.040 * dt
                         z_offset_relief = max(0.0, z_offset_relief)
                         
                     cmd.twist.linear_x = cmd_vx
                     cmd.twist.linear_y = cmd_vy
                     
-                # Z轴改为“非对称刚度”：抬起时如闪电，下压时如羽毛
+                # Z轴改为“动态非对称刚度”：兼顾起步轻柔防戳与避障极速恢复
                 if dz > 0:
                     # 需要向上抬升 (拔出)
                     cmd_vz = np.clip(8.0 * dz, 0.0, 0.05) # 极速拔出，最高 50mm/s
                 else:
                     # 需要向下压入 (下探与恢复)
-                    cmd_vz = np.clip(1.0 * dz, -0.01, 0.0) # 轻柔下探，最高仅 10mm/s，绝不猛戳
+                    if z_offset_relief > 0.0001:
+                        # 正在进行避障后的恢复下压，允许高速猛扎以防断墨太长
+                        cmd_vz = np.clip(4.0 * dz, -0.04, 0.0) # 快速恢复，最高 40mm/s
+                    else:
+                        # 正常起步贴合纸面，轻柔慢压防止戳破纸箱
+                        cmd_vz = np.clip(1.0 * dz, -0.01, 0.0) # 轻柔贴合，最高 10mm/s
                 
                 cmd.twist.linear_z = cmd_vz
                 cmd.twist.angular_x = 0.0
