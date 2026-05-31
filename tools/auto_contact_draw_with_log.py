@@ -200,69 +200,39 @@ class AutoContactDrawer:
         self.vel_pub.publish(cmd)
 
     def run_auto_touchdown(self):
-        """
-        动作 1：全自动下探寻面。控制机械臂以 5mm/s 速度向下移动，直到双阈值判定接触时停机。
-        """
-        rospy.loginfo("🚀 开始自动下探寻面程序...")
-        self.state = FREE_SPACE  # 强制处于 FREE_SPACE 以使去皮逻辑生效
+        rospy.loginfo("🚀 开始沿 -Z 轴纯运动学软着陆寻面...")
+        self.state = FREE_SPACE
         
-        # 强迫机械臂在启动前彻底静止 1.5 秒，完全平息之前移动带来的残余力矩
-        rospy.loginfo("⏸️ 机械臂静止中 (1.5秒)，正在平息关节残留力矩...")
-        rospy.sleep(1.5)
+        rospy.sleep(1.5) # 等待机械臂平稳
         
-        rospy.loginfo("⚖️ 开始高精度去皮校零...")
-        self.calibrated = False
-        self.calibration_samples = []
-        
-        while not self.calibrated and not rospy.is_shutdown():
-            rospy.sleep(0.1)
-            
-        rate = rospy.Rate(40) # 40Hz
+        rate = rospy.Rate(40)
+        dt = 0.025
         contact_detected = False
         loop_cnt = 0
-        
-        recent_forces = []
-        verify_size = 4
-        
-        # 获取一个下探过程专用的基准，用于姿态温漂补偿
-        local_fz_bias = self.fz_bias
+        stuck_cnt = 0
         
         while not rospy.is_shutdown():
             loop_cnt += 1
+            prev_z = self.current_z
             
-            raw_f = self.raw_fz
-            # 起步期强制跟随：起步的前 1.5 秒内，强制吸收电机启动电涌和初始姿态漂移
-            if loop_cnt < 60:
-                local_fz_bias = 0.90 * local_fz_bias + 0.10 * raw_f
-            # 平稳期条件跟随：只要净受力小于 5.0N，就缓慢更新消除慢速温漂；超过则锁定基准准备触发
-            elif abs(raw_f - local_fz_bias) < 5.0:
-                local_fz_bias = 0.98 * local_fz_bias + 0.02 * raw_f
-                
-            current_net_fz = abs(raw_f - local_fz_bias)
+            # 沿 -Z 方向恒速前探 5mm/s
+            self.send_cartesian_velocity(0.0, 0.0, -0.005)
+            rate.sleep()
             
-            # 维护最新力数据缓存序列
-            recent_forces.append(current_net_fz)
-            if len(recent_forces) > verify_size:
-                recent_forces.pop(0)
-            
-            if loop_cnt % 15 == 0:
-                rospy.loginfo(f"⏳ 正在直线下探... 净 Fz: {current_net_fz:.2f} N (Bias: {local_fz_bias:.2f}) | 缓存: {[round(f, 2) for f in recent_forces]}")
-                
-            # 起步前 1.5 秒 (约 60 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
+            # 前 1.5 秒为加速平稳期，屏蔽检测
             if loop_cnt > 60:
-                # 动态减速机制：感受到的力越大，下发的速度越小，从而软着陆 (1D 阻抗寻面)
-                if current_net_fz > 2.0:
-                    speed_factor = max(0.0, (10.0 - current_net_fz) / 8.0)
-                    down_speed = -0.005 * speed_factor
+                # 使用物理编码器反馈计算真实 Z 轴速度
+                actual_speed = abs(self.current_z - prev_z) / dt
+                
+                # 预期速度为 0.005 m/s，若实际速度跌破 0.001 m/s (20%)，即判定为物理碰壁失速！
+                if actual_speed < 0.001:
+                    stuck_cnt += 1
                 else:
-                    down_speed = -0.005
+                    stuck_cnt = 0
                     
-                # 只有当缓存数足够，且最后连续 verify_size 个采样周期都大于等于 10.0 N 时，才判定触及表面
-                if len(recent_forces) >= verify_size and all(f >= 10.0 for f in recent_forces):
-                    rospy.loginfo(f"🟢 判定触及纸箱表面！")
-                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 10.0 N)")
-                    rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {current_net_fz:.2f} N")
-                    
+                # 连续 4 帧（0.1秒）确认失速
+                if stuck_cnt >= 4:
+                    rospy.loginfo(f"🟢 运动学失速触发！精准判定触及桌面纸板 (当前移速: {actual_speed:.4f} m/s)")
                     # 立即发送 5 次 0 速度，确保驱动层彻底刹停
                     for _ in range(5):
                         self.send_cartesian_velocity(0.0, 0.0, 0.0)
@@ -270,13 +240,8 @@ class AutoContactDrawer:
                     contact_detected = True
                     break
             else:
-                down_speed = -0.005
                 if loop_cnt % 15 == 0:
                     rospy.loginfo("⏳ 启动加速平稳期，屏蔽接触判定...")
-                    
-            # 发送向下探速度
-            self.send_cartesian_velocity(0.0, 0.0, down_speed)
-            rate.sleep()
             
         if contact_detected:
             rospy.sleep(0.5) # 等待彻底静止
@@ -402,9 +367,9 @@ class AutoContactDrawer:
         
         # --- 阶段 2：正式绘制 (盲探避障绘制 Phase 2: Kinematic Woodpecker) ---
         z_offset_relief = 0.0  # 单向安全泄压补偿量
+        macro_z_shift = 0.0    # 宏观平面自适应积分器
         relief_cooldown = 0    # 停滞等待帧数
         stuck_cnt = 0          # 卡死连续帧数
-        k_pos = 1.0            # 刚度系数，保持较快速度
         
         actual_log = []
         
@@ -432,7 +397,7 @@ class AutoContactDrawer:
                 dy = target_y - self.current_y
                 dist_to_target = math.hypot(dx, dy)
                 
-                if dist_to_target < 0.001: # 允许误差极大幅度缩小至 1mm，必须走到当前点才允许下一个点
+                if dist_to_target < 0.0005: # 减小允许误差，强制逼近笔尖真实位置
                     break
                     
                 # 1. 速度生成与运动学防卡死检测
@@ -440,8 +405,8 @@ class AutoContactDrawer:
                 actual_speed = movement / dt if dt > 0 else 0.0
                 
                 # 【全功率恒速推土机】计算
-                max_speed = 0.035  # 巡航限速 35mm/s
-                k_pos_near = 6.0   # 靠近目标点时的高刚度收敛系数
+                max_speed = 0.045  # 巡航限速 45mm/s
+                k_pos_near = 12.0  # 极高刚度，防粘滑卡死
                 
                 cmd_vx_raw = k_pos_near * dx
                 cmd_vy_raw = k_pos_near * dy
@@ -461,9 +426,9 @@ class AutoContactDrawer:
                 
                 if wp['phase'] in ['draw', 'touch_down']:
                     # 只要预期下发速度大于 5mm/s 且不在抬升冷却期，就启用防戳破卡死检测
-                    if expected_speed > 0.005 and relief_cooldown == 0:
+                    if expected_speed > 0.003 and relief_cooldown == 0:
                         # 恢复瞬时重置机制，过滤掉由于电机刚启动/转向时的加速度迟滞导致的“假受阻”
-                        if actual_speed < 0.25 * expected_speed or actual_speed < 0.002:
+                        if actual_speed < 0.3 * expected_speed or actual_speed < 0.002:
                             stuck_cnt += 1
                         else:
                             stuck_cnt = 0
@@ -480,9 +445,12 @@ class AutoContactDrawer:
                     if stuck_cnt > 8: # 必须连续卡死 8 帧 (0.2秒)，确保是真的陷入了坑洼，而不是在加速
                         z_offset_relief += 0.0035 # 考虑到笔尖形变缓冲，大幅拔高 3.5mm 以确保笔尖完全脱离障碍物
                         z_offset_relief = min(z_offset_relief, 0.015) # 最大允许拔高 15mm
+                        
+                        macro_z_shift += 0.0004
+                        
                         relief_cooldown = 10 # 停滞 10 帧 (0.25秒)，确保有时间完成物理拔出
                         stuck_cnt = 0
-                        rospy.logwarn(f"⚠️ 物理受阻 (Actual/Exp={actual_speed:.3f}/{expected_speed:.3f})，触发盲探极速抬笔！")
+                        rospy.logwarn(f"⚠️ 物理受阻 (Act/Exp={actual_speed:.3f}/{expected_speed:.3f})！瞬发退缩且基准抬升 -> {macro_z_shift:.4f}m")
                 else:
                     # 提笔移动阶段，清空状态
                     z_offset_relief = 0.0
@@ -490,11 +458,11 @@ class AutoContactDrawer:
                     stuck_cnt = 0
                 
                 # 3. 目标高度计算
-                fixed_press_depth = 0.001  # 默认固定下压深度缩小至 1mm，因为寻面 15N 时纸箱已被一定程度压缩
+                fixed_press_depth = 0.001  # 固定下压深度缩小至 1mm，纯运动学探面已极其精准
                 if wp['phase'] in ['draw', 'touch_down']:
-                    target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief
+                    target_z = wp['z_nominal'] - fixed_press_depth + z_offset_relief + macro_z_shift
                 else:
-                    target_z = wp['z_nominal']
+                    target_z = wp['z_nominal'] + 0.015 + macro_z_shift
                     
                 dz = target_z - self.current_z
                 
@@ -506,10 +474,13 @@ class AutoContactDrawer:
                     cmd_vy = 0.0
                     # 停滞状态依然允许极速向上
                 else:
-                    # 正常移动，并极速下压恢复接触 (40mm/s，缩短跳笔空白期)
+                    # 正常移动，并极速下压恢复接触 (5mm/s平滑下落)
                     if wp['phase'] in ['draw', 'touch_down']:
-                        z_offset_relief -= 0.040 * dt
+                        z_offset_relief -= 0.005 * dt
                         z_offset_relief = max(0.0, z_offset_relief)
+                        
+                        if z_offset_relief < 0.0001:
+                            macro_z_shift -= 0.0001 * dt
                         
                 # Z轴改为“动态非对称刚度”：兼顾起步轻柔防戳与避障极速恢复
                 if dz > 0:
