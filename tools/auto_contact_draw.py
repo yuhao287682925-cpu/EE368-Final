@@ -96,8 +96,8 @@ class PureAdmittanceDrawer:
             reader = csv.DictReader(f)
             for row in reader:
                 raw_waypoints.append({
-                    'x': float(row['x']),
-                    'y': float(row['y']),
+                    'x': float(row['x_m']),
+                    'y': float(row['y_m']),
                     'phase': row['phase']
                 })
         if not raw_waypoints:
