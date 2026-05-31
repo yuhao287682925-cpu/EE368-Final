@@ -402,13 +402,13 @@ class AutoContactDrawer:
                 if wp['phase'] in ['draw', 'touch_down']:
                     # 只要预期下发速度大于 5mm/s 且不在抬升冷却期，就启用防戳破卡死检测
                     if expected_speed > 0.005 and relief_cooldown == 0:
-                        # 敏感度大幅提升：实际速度不到指令速度的 50%，或者极小
-                        if actual_speed < 0.5 * expected_speed or actual_speed < 0.002:
-                            stuck_cnt += 2  # 加速触发
+                        # 恢复瞬时重置机制，过滤掉由于电机刚启动/转向时的加速度迟滞导致的“假受阻”
+                        if actual_speed < 0.25 * expected_speed or actual_speed < 0.002:
+                            stuck_cnt += 1
                         else:
-                            stuck_cnt = max(0, stuck_cnt - 1)  # 漏损积分，防止因单帧抖动导致计数器瞬间清零
+                            stuck_cnt = 0
                     else:
-                        stuck_cnt = max(0, stuck_cnt - 1)
+                        stuck_cnt = 0
                 else:
                     stuck_cnt = 0
                     
@@ -417,10 +417,10 @@ class AutoContactDrawer:
                 
                 # 2. 状态机转移逻辑
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if stuck_cnt > 4: # 漏损积分达标
-                        z_offset_relief += 0.005 # 瞬间将目标高度猛力拔高 5mm (应对更深的纸箱缝隙)
-                        z_offset_relief = min(z_offset_relief, 0.020) # 最大允许拔高 20mm
-                        relief_cooldown = 20 # 进入停滞状态 20 帧 (0.5秒)，确保Z轴有充分时间拔出
+                    if stuck_cnt > 8: # 必须连续卡死 8 帧 (0.2秒)，确保是真的陷入了坑洼，而不是在加速
+                        z_offset_relief += 0.003 # 瞬间将目标高度猛力拔高 3mm
+                        z_offset_relief = min(z_offset_relief, 0.015) # 最大允许拔高 15mm
+                        relief_cooldown = 15 # 进入停滞状态 15 帧 (0.375秒)
                         stuck_cnt = 0
                         rospy.logwarn(f"⚠️ 物理受阻 (Actual/Exp={actual_speed:.3f}/{expected_speed:.3f})，触发盲探极速抬笔！")
                 else:
@@ -450,9 +450,9 @@ class AutoContactDrawer:
                     cmd.twist.linear_y = 0.0
                     # 停滞状态依然允许极速向上
                 else:
-                    # 正常移动，并缓慢下压恢复接触 (4mm/s)
+                    # 正常移动，并快速下压恢复接触 (15mm/s，防止长时间在半空画画)
                     if wp['phase'] in ['draw', 'touch_down']:
-                        z_offset_relief -= 0.004 * dt
+                        z_offset_relief -= 0.015 * dt
                         z_offset_relief = max(0.0, z_offset_relief)
                         
                     cmd.twist.linear_x = cmd_vx
