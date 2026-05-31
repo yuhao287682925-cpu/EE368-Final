@@ -270,7 +270,7 @@ class AutoContactDrawer:
                     
                 # 屏蔽前 0.5 秒加速抖动
                 if loop_cnt > 20:
-                    if len(recent_forces) >= 5 and all(f >= 2.0 for f in recent_forces): # 二次下探阈值降低为 2.0N
+                    if len(recent_forces) >= 5 and all(f >= 1.5 for f in recent_forces): # 二次下探阈值降低为 1.5N
                         rospy.loginfo("🟢 二次接触锁定！")
                         for _ in range(10):
                             self.vel_pub.publish(stop_cmd)
@@ -433,11 +433,11 @@ class AutoContactDrawer:
                 cmd = TwistCommand()
                 cmd.reference_frame = 3
                 
-                # 增加最小死区速度(8mm/s)，防止最后阶段如蜗牛爬行
+                # 增加最小死区速度(4mm/s)，防止最后阶段如蜗牛爬行，但避免过大导致笔尖形变
                 v_x = k_pos * dx
                 v_y = k_pos * dy
-                if 0 < abs(v_x) < 0.008 and dist_to_target > 0.0015: v_x = math.copysign(0.008, v_x)
-                if 0 < abs(v_y) < 0.008 and dist_to_target > 0.0015: v_y = math.copysign(0.008, v_y)
+                if 0 < abs(v_x) < 0.004 and dist_to_target > 0.0015: v_x = math.copysign(0.004, v_x)
+                if 0 < abs(v_y) < 0.004 and dist_to_target > 0.0015: v_y = math.copysign(0.004, v_y)
                 
                 cmd.twist.linear_x = np.clip(v_x, -0.04, 0.04)
                 cmd.twist.linear_y = np.clip(v_y, -0.04, 0.04)
@@ -477,8 +477,8 @@ class AutoContactDrawer:
                     adjust_cnt += 1
                     static_fz = self.current_fz
                     
-                    # 放宽完美区间到 3.5N ~ 7.0N，减少陷入反复调整的概率
-                    if 3.5 <= static_fz <= 7.0:
+                    # 修改目标压力区间为 1.5N ~ 3.5N，解决下笔太深的问题
+                    if 1.5 <= static_fz <= 3.5:
                         break
                         
                     adjust_cmd = TwistCommand()
@@ -486,10 +486,10 @@ class AutoContactDrawer:
                     adjust_cmd.twist.linear_x = 0.0
                     adjust_cmd.twist.linear_y = 0.0
                     
-                    if static_fz < 3.5:
+                    if static_fz < 1.5:
                         # 受力不足，轻微下探 (提速)
                         adjust_cmd.twist.linear_z = -0.002
-                    elif static_fz > 7.0:
+                    elif static_fz > 3.5:
                         # 受力过大，明显抬起 (提速)
                         adjust_cmd.twist.linear_z = 0.005
                         
