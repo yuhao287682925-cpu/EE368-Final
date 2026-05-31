@@ -367,7 +367,7 @@ class AutoContactDrawer:
                 dy = target_y - self.current_y
                 dz = target_z - self.current_z
                 
-                if math.hypot(dx, dy) < 0.002: # 到位距离 2mm，更精确贴合
+                if math.hypot(dx, dy) < 0.003: # 到位距离 3mm
                     break
                     
                 cmd = TwistCommand()
@@ -419,7 +419,7 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            k_pos = 0.6  # 刚度降至 0.6，使移动速度更缓慢平顺
+            k_pos = 1.0  # 刚度回调至 1.0，加快画画速度
             
             stuck_cnt = 0
             prev_servo_x = self.current_x
@@ -437,7 +437,7 @@ class AutoContactDrawer:
                 dy = target_y - self.current_y
                 dist_to_target = math.hypot(dx, dy)
                 
-                if dist_to_target < 0.002: # 允许误差减小至 2mm
+                if dist_to_target < 0.003: # 允许误差 3mm
                     break
                     
                 # 绘图力滑动窗口维护与平滑
@@ -465,16 +465,16 @@ class AutoContactDrawer:
                 # 单向安全泄压机制 (基于净化后的 fz_pure，带停滞避让)
                 if wp['phase'] in ['draw', 'touch_down']:
                     # 状态转移逻辑
-                    if fz_pure > 7.0 or stuck_cnt > 5:  # 抬高刹车阈值至 7.0N
+                    if fz_pure > 6.0 or stuck_cnt > 3:  # 稍微调低至 6.0N，并将卡死等待帧数降至3帧以更早介入
                         in_relief_halt = True
                     elif fz_pure < 4.0:  # 相应抬高解除刹车的阈值
                         in_relief_halt = False
                         
                     # 动作执行逻辑
                     if in_relief_halt:
-                        # 触发停滞避让：高速拔出 (15mm/s)
-                        z_offset_relief += 0.015 * dt
-                        if stuck_cnt > 5 and stuck_cnt % 5 == 0:
+                        # 触发停滞避让：极速拔出 (25mm/s)
+                        z_offset_relief += 0.025 * dt
+                        if stuck_cnt > 3 and stuck_cnt % 3 == 0:
                             rospy.logwarn(f"⚠️ 物理卡死或大阻力 (stuck={stuck_cnt}, fz_pure={fz_pure:.1f})，XY停滞并极速抬笔！")
                     elif fz_pure < 2.5:
                         # 纯接触力偏小(<2.5N)，快速下探恢复接触 (12mm/s，防止长时间悬空)
@@ -505,11 +505,11 @@ class AutoContactDrawer:
                     cmd.twist.linear_x = 0.0
                     cmd.twist.linear_y = 0.0
                 else:
-                    # 将最大移动速度从 30mm/s 进一步降低到 20mm/s
-                    cmd.twist.linear_x = np.clip(k_pos * dx, -0.02, 0.02)
-                    cmd.twist.linear_y = np.clip(k_pos * dy, -0.02, 0.02)
+                    # 将最大移动速度恢复至 40mm/s
+                    cmd.twist.linear_x = np.clip(k_pos * dx, -0.04, 0.04)
+                    cmd.twist.linear_y = np.clip(k_pos * dy, -0.04, 0.04)
                     
-                cmd.twist.linear_z = np.clip(k_pos * dz, -0.02, 0.02)
+                cmd.twist.linear_z = np.clip(k_pos * dz, -0.04, 0.04)
                 cmd.twist.angular_x = 0.0
                 cmd.twist.angular_y = 0.0
                 cmd.twist.angular_z = 0.0
