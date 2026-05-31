@@ -7,7 +7,7 @@ import numpy as np
 import rospy
 import time
 from sensor_msgs.msg import JointState
-from kortex_driver.msg import TwistCommand
+from kortex_driver.msg import Base_JointSpeeds, JointSpeed
 from std_msgs.msg import Float64 as StdFloat64
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,7 +20,7 @@ from scipy.spatial.transform import Rotation as R
 
 class SideContactDrawer:
     def __init__(self):
-        rospy.init_node('side_contact_draw', anonymous=True)
+        rospy.init_node('side_contact_draw_with_log', anonymous=True)
         
         dh_params_list = np.array([[0, 0, 243.3/1000, 0],
                                    [math.pi/2, 0, 10/1000, 0+math.pi/2],
@@ -34,13 +34,13 @@ class SideContactDrawer:
         self.current_y = 0.0
         self.current_z = 0.0
         
-        self.fy_bias = 0.0
+        self.f3d_bias = np.zeros(3)
         self.calibration_samples = []
         self.calibrated = False
-        self.current_fy = 0.0
+        self.current_f_total = 0.0
         
         rospy.Subscriber("/my_gen3_lite/joint_states", JointState, self.joint_states_callback)
-        self.vel_pub = rospy.Publisher("/my_gen3_lite/in/cartesian_velocity", TwistCommand, queue_size=1)
+        self.vel_pub = rospy.Publisher("/my_gen3_lite/in/joint_velocity", Base_JointSpeeds, queue_size=1)
         self.force_pub = rospy.Publisher("/force_control/auto/estimated_f_normal", StdFloat64, queue_size=1)
 
     def joint_states_callback(self, msg):
@@ -48,6 +48,8 @@ class SideContactDrawer:
         torques = msg.effort[0:6]
         
         if len(thetas) < 6 or len(torques) < 6: return
+        
+        self.current_thetas = thetas
             
         tool_pose = self.arm_model.forward_kinematics(thetas)
         self.current_x = tool_pose[0]
@@ -57,23 +59,44 @@ class SideContactDrawer:
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
         
-        # 面向 -Y 寻面，主要受力轴为 Y
-        raw_fy = tool_force[1]
+        raw_f3d = tool_force[0:3]
+        self.raw_f3d = raw_f3d
         
         if not self.calibrated:
-            self.calibration_samples.append(raw_fy)
+            self.calibration_samples.append(raw_f3d)
             if len(self.calibration_samples) >= 40:
-                self.fy_bias = np.mean(self.calibration_samples)
+                self.f3d_bias = np.mean(self.calibration_samples, axis=0)
                 self.calibrated = True
-                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Y Bias): {self.fy_bias:.2f} N")
+                rospy.loginfo(f"✅ 传感器零点校准完成！消除 3D 静力偏置: [{self.f3d_bias[0]:.2f}, {self.f3d_bias[1]:.2f}, {self.f3d_bias[2]:.2f}] N")
             return
             
-        # -Y 方向推进，取绝对值作为阻力
-        self.current_fy = abs(raw_fy - self.fy_bias)
-        self.force_pub.publish(StdFloat64(self.current_fy))
+        f_net = raw_f3d - self.f3d_bias
+        self.current_f_total = np.linalg.norm(f_net)
+        self.force_pub.publish(StdFloat64(self.current_f_total))
+
+    def send_cartesian_velocity(self, vx, vy, vz):
+        if not hasattr(self, 'current_thetas'):
+            return
+            
+        J = self.arm_model.basic_jacobian(self.current_thetas)
+        V_cart = np.array([vx, vy, vz, 0.0, 0.0, 0.0])
+        J_pinv = np.linalg.pinv(J, rcond=1e-3)
+        q_dot = J_pinv.dot(V_cart)
+        
+        max_q_dot = 0.5
+        q_dot = np.clip(q_dot, -max_q_dot, max_q_dot)
+        
+        cmd = Base_JointSpeeds()
+        for j in range(6):
+            speed = JointSpeed()
+            speed.joint_identifier = j
+            speed.value = q_dot[j]
+            cmd.joint_speeds.append(speed)
+            
+        self.vel_pub.publish(cmd)
 
     def run_auto_touchdown(self):
-        rospy.loginfo("🚀 开始沿 -Y 轴直线寻面...")
+        rospy.loginfo("🚀 开始沿 -Y 轴软着陆寻面...")
         
         self.calibrated = False
         self.calibration_samples = []
@@ -82,42 +105,53 @@ class SideContactDrawer:
             rospy.sleep(0.1)
             
         rate = rospy.Rate(40)
-        down_cmd = TwistCommand()
-        down_cmd.reference_frame = 3
-        # -Y 轴前移探测
-        down_cmd.twist.linear_x = 0.0 
-        down_cmd.twist.linear_y = -0.015
-        down_cmd.twist.linear_z = 0.0
-        
-        stop_cmd = TwistCommand()
-        stop_cmd.reference_frame = 3
-        
         contact_detected = False
         loop_cnt = 0
         recent_forces = []
-        verify_size = 7
+        verify_size = 4
+        
+        local_f3d_bias = self.f3d_bias.copy()
         
         while not rospy.is_shutdown():
             loop_cnt += 1
-            recent_forces.append(self.current_fy)
+            
+            raw_f3d = self.raw_f3d
+            if loop_cnt < 60:
+                local_f3d_bias = 0.90 * local_f3d_bias + 0.10 * raw_f3d
+            elif np.linalg.norm(raw_f3d - local_f3d_bias) < 5.0:
+                local_f3d_bias = 0.98 * local_f3d_bias + 0.02 * raw_f3d
+                
+            current_net_f = np.linalg.norm(raw_f3d - local_f3d_bias)
+            
+            recent_forces.append(current_net_f)
             if len(recent_forces) > verify_size:
                 recent_forces.pop(0)
                 
             if loop_cnt > 60:
-                if len(recent_forces) >= verify_size and all(f >= 12.0 for f in recent_forces):
-                    rospy.loginfo(f"🟢 判定触及纸箱表面！Y 轴接触力: {self.current_fy:.2f} N")
-                    for _ in range(10):
-                        self.vel_pub.publish(stop_cmd)
-                        rospy.sleep(0.005)
+                if current_net_f > 2.0:
+                    speed_factor = max(0.0, (10.0 - current_net_f) / 8.0)
+                    down_speed = -0.005 * speed_factor
+                else:
+                    down_speed = -0.005
+                    
+                if len(recent_forces) >= verify_size and all(f >= 10.0 for f in recent_forces):
+                    rospy.loginfo(f"🟢 判定触及立式纸箱表面！接触合力: {current_net_f:.2f} N")
+                    for _ in range(5):
+                        self.send_cartesian_velocity(0.0, 0.0, 0.0)
+                        rospy.sleep(0.01)
                     contact_detected = True
                     break
+            else:
+                down_speed = -0.005
+                if loop_cnt % 15 == 0:
+                    rospy.loginfo("⏳ 启动加速平稳期，屏蔽接触判定...")
                     
-            self.vel_pub.publish(down_cmd)
+            self.send_cartesian_velocity(0.0, down_speed, 0.0)
             rate.sleep()
             
         if contact_detected:
             rospy.sleep(0.5)
-            rospy.loginfo(f"📍 寻面起点锁定: X={self.current_x:.4f}, Y={self.current_y:.4f}, Z={self.current_z:.4f}")
+            rospy.loginfo(f"📍 侧面寻面起点锁定: X={self.current_x:.4f}, Y={self.current_y:.4f}, Z={self.current_z:.4f}")
             return self.current_x, self.current_y, self.current_z
         else:
             raise RuntimeError("寻面程序异常终止")
@@ -145,7 +179,6 @@ class SideContactDrawer:
                 first_draw_idx = idx
                 break
                 
-        # 恢复默认映射：你扎下去的“接触点”，就是轨迹的第一笔起笔点！
         u_ref = raw_waypoints[first_draw_idx]['x']
         v_ref = raw_waypoints[first_draw_idx]['y']
         
@@ -154,11 +187,6 @@ class SideContactDrawer:
             du = wp['x'] - u_ref
             dv = wp['y'] - v_ref
             
-            # Y 控制深度 (往 -Y 压入)。
-            # X 控制左右：面向 -Y 时，右边是 -X 轴。轨迹 x 增大时，X减小。
-            # Z 控制上下：原轨迹星星是从上往下画（y减小, dv为负）。
-            # 为了实现“扎下去就往上画”，我们反转 Z 轴映射（减去 dv）。
-            # 这会把图形上下颠倒，但完美满足了从下往上画的物理需求！
             aligned_waypoints.append({
                 'x': contact_x - du,
                 'y': contact_y, 
@@ -168,135 +196,146 @@ class SideContactDrawer:
             
         rate = rospy.Rate(40)
         dt = 0.025
+        
+        rospy.loginfo("✍️ 寻面完成，开始启动纯运动学啄木鸟实战侧绘 (带日志记录)...")
+        
         y_offset_relief = 0.0
-        draw_force_window = []
+        relief_cooldown = 0
+        stuck_cnt = 0
+        
         actual_log = []
+        theo_log = []
         
         for i, wp in enumerate(aligned_waypoints):
             if rospy.is_shutdown(): break
                 
-            k_pos = 1.2
-            k_i = 0.8
-            int_err_x, int_err_y, int_err_z = 0.0, 0.0, 0.0
-            stuck_cnt = 0
-            prev_pos = np.array([self.current_x, self.current_y, self.current_z])
+            target_x = wp['x']
+            target_z = wp['z']
+            
+            prev_servo_x = self.current_x
+            prev_servo_z = self.current_z
+            
+            actual_speed = 0.0
+            expected_speed = 0.0
             
             while not rospy.is_shutdown():
                 curr_pos = np.array([self.current_x, self.current_y, self.current_z])
                 
-                # 持续记录高频实际执行轨迹 (仅在落笔阶段)
-                if wp['phase'] in ['draw', 'touch_down']:
-                    actual_log.append({'x': curr_pos[0], 'y': curr_pos[1], 'z': curr_pos[2]})
-                
-                # XZ 平面的位移误差
-                err_x = wp['x'] - curr_pos[0]
-                err_z = wp['z'] - curr_pos[2]
+                err_x = target_x - curr_pos[0]
+                err_z = target_z - curr_pos[2]
                 dist_to_target = math.hypot(err_x, err_z)
                 
-                # 削减切换容差：如果是最后一个点（星星收尾点），容差收紧到 1mm，强制闭合；普通点收紧到 3mm
-                tolerance = 0.001 if i == len(aligned_waypoints) - 1 else 0.003
-                if dist_to_target < tolerance:
+                if dist_to_target < 0.001:
                     break
                     
-                draw_force_window.append(self.current_fy)
-                if len(draw_force_window) > 4: draw_force_window.pop(0)
-                fy_filtered = np.mean(draw_force_window)
+                movement = math.hypot(curr_pos[0] - prev_servo_x, curr_pos[2] - prev_servo_z)
+                actual_speed = movement / dt if dt > 0 else 0.0
                 
-                if wp['phase'] in ['draw', 'touch_down'] and dist_to_target > 0.01:
-                    if np.linalg.norm(curr_pos - prev_pos) < 0.0001:
-                        stuck_cnt += 1
+                max_speed = 0.035
+                k_pos_near = 6.0
+                
+                cmd_vx_raw = k_pos_near * err_x
+                cmd_vz_raw = k_pos_near * err_z
+                v_mag = math.hypot(cmd_vx_raw, cmd_vz_raw)
+                
+                if v_mag > max_speed:
+                    scale = max_speed / v_mag
+                    cmd_vx = cmd_vx_raw * scale
+                    cmd_vz = cmd_vz_raw * scale
+                else:
+                    cmd_vx = cmd_vx_raw
+                    cmd_vz = cmd_vz_raw
+                    
+                expected_speed = math.hypot(cmd_vx, cmd_vz)
+                
+                if wp['phase'] in ['draw', 'touch_down']:
+                    if expected_speed > 0.005 and relief_cooldown == 0:
+                        if actual_speed < 0.25 * expected_speed or actual_speed < 0.002:
+                            stuck_cnt += 1
+                        else:
+                            stuck_cnt = 0
                     else:
-                        stuck_cnt = max(0, stuck_cnt - 1)
+                        stuck_cnt = 0
                 else:
                     stuck_cnt = 0
-                prev_pos = curr_pos
+                    
+                prev_servo_x = curr_pos[0]
+                prev_servo_z = curr_pos[2]
                 
-                # 安全泄压：如果在 -Y 轴上遇到大阻力，往 +Y 退缩
                 if wp['phase'] in ['draw', 'touch_down']:
-                    if fy_filtered > 10.0 or stuck_cnt > 8:
-                        y_offset_relief += 0.005 * dt
-                    elif fy_filtered < 5.0:
-                        y_offset_relief -= 0.002 * dt
-                    y_offset_relief = np.clip(y_offset_relief, 0.0, 0.015)
+                    if stuck_cnt > 8:
+                        y_offset_relief += 0.0035
+                        y_offset_relief = min(y_offset_relief, 0.015)
+                        relief_cooldown = 10
+                        stuck_cnt = 0
+                        rospy.logwarn(f"⚠️ 侧面物理受阻 (Actual/Exp={actual_speed:.3f}/{expected_speed:.3f})，触发极速退缩防卡死！")
                 else:
                     y_offset_relief = 0.0
+                    relief_cooldown = 0
+                    stuck_cnt = 0
                     
-                # 固定深度：向 -Y 压入 3mm
-                fixed_depth = 0.003
+                fixed_press_depth = 0.001
                 if wp['phase'] in ['draw', 'touch_down']:
-                    depth_offset = fixed_depth - y_offset_relief
+                    target_y = wp['y'] - fixed_press_depth + y_offset_relief
                 else:
-                    depth_offset = -0.015 # hover阶段，往 +Y 方向拔出 15mm 避免刮擦
+                    target_y = wp['y'] + 0.015
+                    
+                dy = target_y - curr_pos[1]
                 
-                # 目标 Y 为接触面往里压 (- depth_offset)
-                target_y = wp['y'] - depth_offset
-                err_y = target_y - curr_pos[1]
-                
-                # 积分项积累与抗积分饱和 (Anti-windup)
-                int_err_x += err_x * dt
-                int_err_y += err_y * dt
-                int_err_z += err_z * dt
-                
-                int_err_x = np.clip(int_err_x, -0.05, 0.05)
-                int_err_y = np.clip(int_err_y, -0.05, 0.05)
-                int_err_z = np.clip(int_err_z, -0.05, 0.05)
-                
-                cmd = TwistCommand()
-                cmd.reference_frame = 3
-                cmd.duration = 0
-                cmd.twist.linear_x = np.clip(k_pos * err_x + k_i * int_err_x, -0.06, 0.06)
-                cmd.twist.linear_y = np.clip(k_pos * err_y + k_i * int_err_y, -0.06, 0.06)
-                cmd.twist.linear_z = np.clip(k_pos * err_z + k_i * int_err_z, -0.06, 0.06)
-                
-                self.vel_pub.publish(cmd)
+                if relief_cooldown > 0:
+                    relief_cooldown -= 1
+                    cmd_vx = 0.0
+                    cmd_vz = 0.0
+                else:
+                    if wp['phase'] in ['draw', 'touch_down']:
+                        y_offset_relief -= 0.005 * dt
+                        y_offset_relief = max(0.0, y_offset_relief)
+                        
+                if dy > 0:
+                    cmd_vy = np.clip(8.0 * dy, 0.0, 0.05)
+                else:
+                    if y_offset_relief > 0.0001:
+                        cmd_vy = np.clip(4.0 * dy, -0.04, 0.0)
+                    else:
+                        cmd_vy = np.clip(1.0 * dy, -0.01, 0.0)
+                        
+                # 记录高频日志
+                if wp['phase'] == 'draw':
+                    actual_log.append({'x': curr_pos[0], 'y': curr_pos[1], 'z': curr_pos[2]})
+                    theo_log.append({'x': target_x, 'y': target_y, 'z': target_z})
+                        
+                self.send_cartesian_velocity(cmd_vx, cmd_vy, cmd_vz)
                 rate.sleep()
                 
-            rospy.loginfo(f"进度: {i+1}/{len(aligned_waypoints)} | Y轴向力: {self.current_fy:.2f}N | Y退缩: {y_offset_relief:.4f}m")
+            rospy.loginfo(f"侧绘进度: {i+1}/{len(aligned_waypoints)} | 面内速度: {actual_speed:.3f}/{expected_speed:.3f} | Y轴退缩: {y_offset_relief:.4f}m")
             
         rospy.loginfo("🛑 绘制到达终点，沿 +Y 轴向外拔出...")
-        lift_cmd = TwistCommand()
-        lift_cmd.reference_frame = 3
-        # Y 轴后退拔出 3cm (往 +Y)
-        lift_cmd.twist.linear_x = 0.0
-        lift_cmd.twist.linear_y = 0.03
-        lift_cmd.twist.linear_z = 0.0
-        
         for _ in range(40):
             if rospy.is_shutdown(): break
-            self.vel_pub.publish(lift_cmd)
+            self.send_cartesian_velocity(0.0, 0.03, 0.0)
             rospy.sleep(0.025)
             
-        stop_cmd = TwistCommand()
-        stop_cmd.reference_frame = 3
         for _ in range(15):
-            self.vel_pub.publish(stop_cmd)
+            self.send_cartesian_velocity(0.0, 0.0, 0.0)
             rospy.sleep(0.01)
             
+        with open('actual_executed_trajectory.csv', 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
+            writer.writeheader()
+            writer.writerows(actual_log)
+        with open('theo_mapped_trajectory.csv', 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
+            writer.writeheader()
+            writer.writerows(theo_log)
+            
+        rospy.loginfo("📊 轨迹日志已保存至 actual_executed_trajectory.csv 和 theo_mapped_trajectory.csv")
         rospy.loginfo("🎉 -Y 轴侧面绘制任务圆满完成！")
         
-        # ========== 新增功能：自动保存轨迹并绘图对比 ==========
-        theo_csv = "theo_mapped_trajectory.csv"
-        with open(theo_csv, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
-            writer.writeheader()
-            for w in aligned_waypoints:
-                if w['phase'] in ['draw', 'touch_down']:
-                    writer.writerow({'x': w['x'], 'y': w['y'], 'z': w['z']})
-                    
-        actual_csv = "actual_executed_trajectory.csv"
-        with open(actual_csv, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['x', 'y', 'z'])
-            writer.writeheader()
-            for p in actual_log:
-                writer.writerow(p)
-                
-        rospy.loginfo(f"📊 轨迹数据已自动保存至 {theo_csv} 和 {actual_csv}")
-        rospy.loginfo("📈 正在弹窗显示 3D 轨迹误差对比图...")
         try:
-            from analyze_error import analyze_and_plot
-            analyze_and_plot(actual_csv, theo_csv)
+            import subprocess
+            subprocess.Popen(["python3", "tools/analyze_error.py", "--actual", "actual_executed_trajectory.csv", "--theo", "theo_mapped_trajectory.csv"])
         except Exception as e:
-            rospy.logerr(f"❌ 自动绘图异常: {e}")
+            rospy.logerr(f"启动自动分析失败: {e}")
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
