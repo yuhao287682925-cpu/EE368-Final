@@ -222,7 +222,7 @@ class AutoContactDrawer:
         loop_cnt = 0
         
         recent_forces = []
-        verify_size = 10
+        verify_size = 4
         
         # 获取一个下探过程专用的基准，用于姿态温漂补偿
         local_fz_bias = self.fz_bias
@@ -250,24 +250,32 @@ class AutoContactDrawer:
                 
             # 起步前 1.5 秒 (约 60 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
             if loop_cnt > 60:
-                # 只有当缓存数足够，且最后连续 verify_size 个采样周期都大于等于 15.0 N 时，才判定触及表面
-                if len(recent_forces) >= verify_size and all(f >= 15.0 for f in recent_forces):
+                # 动态减速机制：感受到的力越大，下发的速度越小，从而软着陆 (1D 阻抗寻面)
+                if current_net_fz > 2.0:
+                    speed_factor = max(0.0, (10.0 - current_net_fz) / 8.0)
+                    down_speed = -0.005 * speed_factor
+                else:
+                    down_speed = -0.005
+                    
+                # 只有当缓存数足够，且最后连续 verify_size 个采样周期都大于等于 10.0 N 时，才判定触及表面
+                if len(recent_forces) >= verify_size and all(f >= 10.0 for f in recent_forces):
                     rospy.loginfo(f"🟢 判定触及纸箱表面！")
-                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 15.0 N)")
+                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 10.0 N)")
                     rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {current_net_fz:.2f} N")
                     
-                    # 发送 10 次 0 速度，确保驱动层刹停
-                    for _ in range(10):
+                    # 立即发送 5 次 0 速度，确保驱动层彻底刹停
+                    for _ in range(5):
                         self.send_cartesian_velocity(0.0, 0.0, 0.0)
-                        rospy.sleep(0.005)
+                        rospy.sleep(0.01)
                     contact_detected = True
                     break
             else:
+                down_speed = -0.005
                 if loop_cnt % 15 == 0:
                     rospy.loginfo("⏳ 启动加速平稳期，屏蔽接触判定...")
                     
-            # 发送向下探速度 -5mm/s
-            self.send_cartesian_velocity(0.0, 0.0, -0.005)
+            # 发送向下探速度
+            self.send_cartesian_velocity(0.0, 0.0, down_speed)
             rate.sleep()
             
         if contact_detected:
