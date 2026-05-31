@@ -5,7 +5,7 @@ import math
 import numpy as np
 import rospy
 from sensor_msgs.msg import JointState
-from kortex_driver.msg import TwistCommand
+from kortex_driver.msg import Base_JointSpeeds, JointSpeed
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
@@ -34,7 +34,7 @@ class WristAlignerSide:
         self.msg_count = 0
         
         rospy.Subscriber("/my_gen3_lite/joint_states", JointState, self.joint_states_callback)
-        self.vel_pub = rospy.Publisher("/my_gen3_lite/in/cartesian_velocity", TwistCommand, queue_size=1)
+        self.vel_pub = rospy.Publisher("/my_gen3_lite/in/joint_velocity", Base_JointSpeeds, queue_size=1)
 
     def joint_states_callback(self, msg):
         self.msg_count += 1
@@ -89,37 +89,38 @@ class WristAlignerSide:
                 omega_cmd = k_rot * angle * axis
                 omega_cmd = np.clip(omega_cmd, -max_ang_vel, max_ang_vel)
                 
-            # 2. 位置释放控制核心算法
+            # 2. 位置释放控制核心算法：直接解算角速度雅可比逆
             J = self.arm_model.basic_jacobian(self.thetas)
-            J_linear = J[0:3, :]
             J_angular = J[3:6, :]
             
-            q_dot = np.linalg.pinv(J_angular).dot(omega_cmd)
-            v_linear = J_linear.dot(q_dot)
+            # 使用带阻尼的伪逆，求解所需关节速度
+            q_dot = np.linalg.pinv(J_angular, rcond=1e-3).dot(omega_cmd)
             
-            # 3. 发布 TwistCommand
-            cmd = TwistCommand()
-            cmd.reference_frame = 3 # 基座坐标系
-            cmd.duration = 0
+            # 3. 绕过笛卡尔限位，直接下发底层关节角速度
+            max_q_dot = 0.5
+            q_dot = np.clip(q_dot, -max_q_dot, max_q_dot)
             
-            if np.linalg.norm(omega_cmd) < 1e-4:
-                cmd.twist.linear_x = 0.0
-                cmd.twist.linear_y = 0.0
-                cmd.twist.linear_z = 0.0
-            else:
-                cmd.twist.linear_x = 0.8 * v_linear[0]
-                cmd.twist.linear_y = 0.8 * v_linear[1]
-                cmd.twist.linear_z = 0.8 * v_linear[2]
-            
-            cmd.twist.angular_x = omega_cmd[0]
-            cmd.twist.angular_y = omega_cmd[1]
-            cmd.twist.angular_z = omega_cmd[2]
-            
+            cmd = Base_JointSpeeds()
+            for j in range(6):
+                speed = JointSpeed()
+                speed.joint_identifier = j
+                if np.linalg.norm(omega_cmd) < 1e-4:
+                    speed.value = 0.0
+                else:
+                    speed.value = q_dot[j]
+                cmd.joint_speeds.append(speed)
+                
             self.vel_pub.publish(cmd)
             rate.sleep()
             
-        stop_cmd = TwistCommand()
-        stop_cmd.reference_frame = 3
+        # 停机指令
+        stop_cmd = Base_JointSpeeds()
+        for j in range(6):
+            speed = JointSpeed()
+            speed.joint_identifier = j
+            speed.value = 0.0
+            stop_cmd.joint_speeds.append(speed)
+            
         for _ in range(15):
             self.vel_pub.publish(stop_cmd)
             rospy.sleep(0.005)
