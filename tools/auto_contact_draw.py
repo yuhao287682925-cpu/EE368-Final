@@ -136,6 +136,7 @@ class AutoContactDrawer:
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
         raw_fz = tool_force[2]
+        self.raw_fz = raw_fz  # 保存为实例变量，供其他函数调用
         
         # 提取手腕末端关节 (第 6 关节) 原始力矩
         self.wrist_torque = abs(torques[5])
