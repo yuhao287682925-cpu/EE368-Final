@@ -113,21 +113,38 @@ class PureAdmittanceDrawer:
             rate.sleep()
             
         highest_draw_z = -999.0
+        loop_cnt = 0
+        local_fz_bias = self.fz_bias
         
         while not rospy.is_shutdown():
-            self.current_net_fz = abs(self.raw_fz - self.fz_bias)
+            loop_cnt += 1
+            raw_f = self.raw_fz
+            
+            if loop_cnt < 60:
+                local_fz_bias = 0.90 * local_fz_bias + 0.10 * raw_f
+            elif abs(raw_f - local_fz_bias) < 5.0:
+                local_fz_bias = 0.98 * local_fz_bias + 0.02 * raw_f
+                
+            self.current_net_fz = abs(raw_f - local_fz_bias)
             self.force_pub.publish(Float64(self.current_net_fz))
             
-            if self.current_net_fz > 8.0:
-                rospy.loginfo(f"🟢 寻面完成，确认接触物理表面！(接触力: {self.current_net_fz:.2f} N)")
-                highest_draw_z = self.current_z
-                for _ in range(10):
-                    self.send_cartesian_velocity(0.0, 0.0, 0.0)
+            if loop_cnt > 60:
+                if self.current_net_fz > 8.0:
+                    rospy.loginfo(f"🟢 寻面完成，确认接触物理表面！(接触力: {self.current_net_fz:.2f} N)")
+                    highest_draw_z = self.current_z
+                    for _ in range(10):
+                        self.send_cartesian_velocity(0.0, 0.0, 0.0)
+                        rate.sleep()
+                    break
+                else:
+                    self.send_cartesian_velocity(0.0, 0.0, -0.005)
+                    self.cmd_vz_pub.publish(Float64(-0.005))
                     rate.sleep()
-                break
             else:
                 self.send_cartesian_velocity(0.0, 0.0, -0.005)
                 self.cmd_vz_pub.publish(Float64(-0.005))
+                if loop_cnt % 15 == 0:
+                    rospy.loginfo("⏳ 启动加速平稳期，屏蔽接触判定...")
                 rate.sleep()
                 
         first_draw_wp = next(w for w in raw_waypoints if w['phase'] in ['draw', 'touch_down'])
