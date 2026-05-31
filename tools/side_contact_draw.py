@@ -220,6 +220,7 @@ class SideContactDrawer:
         
         # 侧向安全泄压补偿量 (+Y方向)
         y_offset_relief = 0.0
+        macro_y_shift = 0.0 # 宏观平面自适应积分器
         relief_cooldown = 0
         stuck_cnt = 0
         
@@ -250,8 +251,8 @@ class SideContactDrawer:
                 actual_speed = movement / dt if dt > 0 else 0.0
                 
                 # 面内巡航速度生成
-                max_speed = 0.035
-                k_pos_near = 6.0
+                max_speed = 0.025 # 降低侧向最高限速，提升抗重力跟随精度
+                k_pos_near = 4.0  # 降低P控制刚度，防止物理柔性形变
                 
                 cmd_vx_raw = k_pos_near * err_x
                 cmd_vz_raw = k_pos_near * err_z
@@ -285,35 +286,38 @@ class SideContactDrawer:
                 # 触发侧边抬升
                 if wp['phase'] in ['draw', 'touch_down']:
                     if stuck_cnt > 8:
-                        y_offset_relief += 0.0035 # 向外 (+Y) 瞬时拔出 3.5mm
+                        y_offset_relief += 0.0035 # 侧边方向拔出 (+Y)
                         y_offset_relief = min(y_offset_relief, 0.015)
+                        
+                        macro_y_shift += 0.0004
+                        
                         relief_cooldown = 10
                         stuck_cnt = 0
-                        rospy.logwarn(f"⚠️ 侧面物理受阻 (Actual/Exp={actual_speed:.3f}/{expected_speed:.3f})，触发极速退缩防卡死！")
+                        rospy.logwarn(f"⚠️ 物理受阻 (Act/Exp={actual_speed:.3f}/{expected_speed:.3f})！瞬发退缩且基准外移 -> {macro_y_shift:.4f}m")
                 else:
                     y_offset_relief = 0.0
                     relief_cooldown = 0
                     stuck_cnt = 0
                     
-                # 侧面压入深度计算 (Y轴)
                 fixed_press_depth = 0.001
                 if wp['phase'] in ['draw', 'touch_down']:
-                    # 往 -Y 方向压，所以是 接触面Y - 压深 + 泄压退缩
-                    target_y = wp['y'] - fixed_press_depth + y_offset_relief
+                    target_y = wp['y'] - fixed_press_depth + y_offset_relief + macro_y_shift
                 else:
-                    target_y = wp['y'] + 0.015 # 悬空时向外退 15mm
+                    target_y = wp['y'] + 0.015 + macro_y_shift
                     
                 dy = target_y - curr_pos[1]
                 
-                # 侧向阻抗/跟随计算
                 if relief_cooldown > 0:
                     relief_cooldown -= 1
                     cmd_vx = 0.0
                     cmd_vz = 0.0
                 else:
                     if wp['phase'] in ['draw', 'touch_down']:
-                        y_offset_relief -= 0.005 * dt # 结合了平滑降落优化 (5mm/s 缓慢贴近侧壁)
+                        y_offset_relief -= 0.005 * dt # 平滑降落优化 (5mm/s)
                         y_offset_relief = max(0.0, y_offset_relief)
+                        
+                        if y_offset_relief < 0.0001:
+                            macro_y_shift -= 0.0001 * dt
                         
                 if dy > 0:
                     cmd_vy = np.clip(8.0 * dy, 0.0, 0.05) # 向外退缩可快速

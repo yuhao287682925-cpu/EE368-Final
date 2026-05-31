@@ -200,6 +200,7 @@ class SideContactDrawer:
         rospy.loginfo("✍️ 寻面完成，开始启动纯运动学啄木鸟实战侧绘 (带日志记录)...")
         
         y_offset_relief = 0.0
+        macro_y_shift = 0.0 # 宏观平面自适应积分器
         relief_cooldown = 0
         stuck_cnt = 0
         
@@ -231,8 +232,8 @@ class SideContactDrawer:
                 movement = math.hypot(curr_pos[0] - prev_servo_x, curr_pos[2] - prev_servo_z)
                 actual_speed = movement / dt if dt > 0 else 0.0
                 
-                max_speed = 0.035
-                k_pos_near = 6.0
+                max_speed = 0.025 # 降低侧向最高限速，提升抗重力跟随精度
+                k_pos_near = 4.0  # 降低P控制刚度，防止物理柔性形变
                 
                 cmd_vx_raw = k_pos_near * err_x
                 cmd_vz_raw = k_pos_near * err_z
@@ -266,9 +267,13 @@ class SideContactDrawer:
                     if stuck_cnt > 8:
                         y_offset_relief += 0.0035
                         y_offset_relief = min(y_offset_relief, 0.015)
+                        
+                        # 核心突破：平面自适应！一旦物理受阻，不仅瞬发抬起，还把整个基准面往外推 0.4mm
+                        macro_y_shift += 0.0004
+                        
                         relief_cooldown = 10
                         stuck_cnt = 0
-                        rospy.logwarn(f"⚠️ 侧面物理受阻 (Actual/Exp={actual_speed:.3f}/{expected_speed:.3f})，触发极速退缩防卡死！")
+                        rospy.logwarn(f"⚠️ 物理受阻 (Act/Exp={actual_speed:.3f}/{expected_speed:.3f})！瞬发退缩且基准外移 -> {macro_y_shift:.4f}m")
                 else:
                     y_offset_relief = 0.0
                     relief_cooldown = 0
@@ -276,9 +281,9 @@ class SideContactDrawer:
                     
                 fixed_press_depth = 0.001
                 if wp['phase'] in ['draw', 'touch_down']:
-                    target_y = wp['y'] - fixed_press_depth + y_offset_relief
+                    target_y = wp['y'] - fixed_press_depth + y_offset_relief + macro_y_shift
                 else:
-                    target_y = wp['y'] + 0.015
+                    target_y = wp['y'] + 0.015 + macro_y_shift
                     
                 dy = target_y - curr_pos[1]
                 
@@ -290,6 +295,10 @@ class SideContactDrawer:
                     if wp['phase'] in ['draw', 'touch_down']:
                         y_offset_relief -= 0.005 * dt
                         y_offset_relief = max(0.0, y_offset_relief)
+                        
+                        # 在自由滑行时，极其缓慢地往里试探 (0.1mm/s)，寻找完美的纸面接触临界点
+                        if y_offset_relief < 0.0001:
+                            macro_y_shift -= 0.0001 * dt
                         
                 if dy > 0:
                     cmd_vy = np.clip(8.0 * dy, 0.0, 0.05)
