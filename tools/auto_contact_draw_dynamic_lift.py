@@ -86,11 +86,17 @@ class AutoContactDrawer:
         self.min_z_offset = -0.03     # 最大下压位移限制 (-3.0 cm)
         
         # 零点力校准状态
+        self.fx_bias = 0.0
+        self.fy_bias = 0.0
         self.fz_bias = 0.0
         self.wrist_torque_bias = 0.0
+        self.fx_calibration_samples = []
+        self.fy_calibration_samples = []
         self.calibration_samples = []
         self.torque_calibration_samples = []
         self.calibrated = False
+        self.current_fx = 0.0
+        self.current_fy = 0.0
         self.current_fz = 0.0
         self.raw_fz = 0.0
         self.is_static = True
@@ -137,6 +143,8 @@ class AutoContactDrawer:
         # 2. 求解基础雅可比矩阵并计算估计力
         J = self.arm_model.basic_jacobian(thetas)
         tool_force = np.linalg.pinv(J.T).dot(torques)
+        raw_fx = tool_force[0]
+        raw_fy = tool_force[1]
         raw_fz = tool_force[2]
         
         # 提取手腕末端关节 (第 6 关节) 原始力矩
@@ -147,23 +155,33 @@ class AutoContactDrawer:
         
         # 自动零点校准
         if not self.calibrated:
+            self.fx_calibration_samples.append(raw_fx)
+            self.fy_calibration_samples.append(raw_fy)
             self.calibration_samples.append(raw_fz)
             self.torque_calibration_samples.append(raw_wrist_torque)
             if len(self.calibration_samples) >= 40:
+                self.fx_bias = np.mean(self.fx_calibration_samples)
+                self.fy_bias = np.mean(self.fy_calibration_samples)
                 self.fz_bias = np.mean(self.calibration_samples)
                 self.wrist_torque_bias = np.mean(self.torque_calibration_samples)
                 self.calibrated = True
-                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Z Bias): {self.fz_bias:.2f} N, (Torque Bias): {self.wrist_torque_bias:.3f} Nm")
+                rospy.loginfo(f"✅ 传感器零点校准完成！消除偏置 (Z Bias): {self.fz_bias:.2f} N")
             return
         
-        # 估计末端 Z 轴向力和手腕力矩（减去零点偏差并取绝对值）
+        # 估计末端力（减去零点偏差，xy保留符号，z取绝对值）
+        self.current_fx = raw_fx - self.fx_bias
+        self.current_fy = raw_fy - self.fy_bias
         self.current_fz = abs(raw_fz - self.fz_bias)
         self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
         
         # 在空闲悬空且静止状态下进行温漂自动去皮（超低通偏置更新）
         if self.state == FREE_SPACE and self.is_static and self.current_fz < 2.0:
+            self.fx_bias = 0.9995 * self.fx_bias + 0.0005 * raw_fx
+            self.fy_bias = 0.9995 * self.fy_bias + 0.0005 * raw_fy
             self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * raw_fz
             self.wrist_torque_bias = 0.9995 * self.wrist_torque_bias + 0.0005 * raw_wrist_torque
+            self.current_fx = raw_fx - self.fx_bias
+            self.current_fy = raw_fy - self.fy_bias
             self.current_fz = abs(raw_fz - self.fz_bias)
             self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
         
@@ -179,6 +197,8 @@ class AutoContactDrawer:
         # 强迫机械臂在启动前静止 1.5 秒，重新去皮校零，完全平息之前移动带来的残余力矩
         rospy.loginfo("⏸️ 机械臂静止中 (1.5秒)，正在平息关节残留力矩并执行高精度校零...")
         self.calibrated = False
+        self.fx_calibration_samples = []
+        self.fy_calibration_samples = []
         self.calibration_samples = []
         self.torque_calibration_samples = []
         rospy.sleep(1.5)
@@ -190,7 +210,7 @@ class AutoContactDrawer:
         
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 3 # 基座坐标系
-        down_cmd.twist.linear_z = -0.010 # -10mm/s 向下，放慢速度以配合更长的确认窗口
+        down_cmd.twist.linear_z = -0.005 # -5mm/s 慢速向下，大幅减少物理挤压产生的回弹积压
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
@@ -243,11 +263,11 @@ class AutoContactDrawer:
             
             rospy.loginfo(f"📍 寻面接触起点锁定 (基于第一阶段 15N 深度): X={current_pose.position.x:.4f}, Y={current_pose.position.y:.4f}, Z={current_pose.position.z:.4f}")
             
-            rospy.loginfo("⬆️ 执行安全微抬：物理向上 3mm 释放扎面应力...")
+            rospy.loginfo("⬆️ 执行安全微抬：物理缓慢向上 2mm 释放扎面应力...")
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
-            lift_cmd.twist.linear_z = 0.010 # 10mm/s 抬升
-            for _ in range(12): # 抬升约 0.3秒，即 3mm
+            lift_cmd.twist.linear_z = 0.005 # 5mm/s 缓慢抬升，防止猛烈回弹
+            for _ in range(16): # 抬升约 0.4秒，即 2mm
                 self.vel_pub.publish(lift_cmd)
                 rospy.sleep(0.025)
             
