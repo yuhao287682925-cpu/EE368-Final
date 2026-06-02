@@ -1,2 +1,0 @@
-set(block_drawing_msgs_MESSAGE_FILES "msg/SurfaceTrajectory.msg;msg/ContactState.msg;msg/DrawingExecutionAction.msg;msg/DrawingExecutionActionGoal.msg;msg/DrawingExecutionActionResult.msg;msg/DrawingExecutionActionFeedback.msg;msg/DrawingExecutionGoal.msg;msg/DrawingExecutionResult.msg;msg/DrawingExecutionFeedback.msg")
-set(block_drawing_msgs_SERVICE_FILES "srv/SetBlockPose.srv;srv/GenerateTrajectory.srv;srv/ExecuteDrawing.srv")
