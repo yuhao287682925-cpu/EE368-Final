@@ -417,7 +417,9 @@ class AutoContactDrawer:
             k_pos_z = 2.0  # 核心改动：Z轴使用距离/高度刚度控制
             
             # === 阶段 1：以距离和高度为主控的平滑移动 ===
+            track_loop_cnt = 0
             while not rospy.is_shutdown():
+                track_loop_cnt += 1
                 dx = target_x - self.current_x
                 dy = target_y - self.current_y
                 
@@ -442,7 +444,7 @@ class AutoContactDrawer:
                         if f_push > 12.0:
                             # 超出部分每 1N 抬升 0.3mm，最高限制抬升 1.5mm
                             dynamic_lift = min((f_push - 12.0) * 0.0003, 0.0015)
-                            if loop_cnt % 10 == 0:
+                            if track_loop_cnt % 10 == 0:
                                 rospy.logwarn(f"⚠️ 遭遇较大运动阻力 (F_push: {f_push:.2f}N)！动态上抬 {dynamic_lift*1000:.1f}mm 避障")
                     
                     # 综合原本的轨迹高度、稳态深度偏置以及动态避障抬升
