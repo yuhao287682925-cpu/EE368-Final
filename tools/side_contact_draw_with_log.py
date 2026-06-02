@@ -213,12 +213,12 @@ class SideContactDrawer:
             if loop_cnt % 15 == 0:
                 rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fy: {self.current_fy:.2f} N | 缓存序列: {[round(f, 2) for f in recent_forces]}")
             
-            # 起步前 1.5 秒 (约 60 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
-            if loop_cnt > 60:
-                # 只有当缓存数足够，且最后连续 verify_size 个采样周期都大于等于 12.0 N 时，才判定触及表面
-                if len(recent_forces) >= verify_size and all(f >= 12.0 for f in recent_forces):
+            # 起步前 2 秒 (80 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
+            if loop_cnt > 80:
+                # 只有当缓存数足够，且最后连续 verify_size 个采样周期都大于等于 15.0 N 时，才判定触及表面
+                if len(recent_forces) >= verify_size and all(f >= 15.0 for f in recent_forces):
                     rospy.loginfo("🟢 判定触及纸箱表面！")
-                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 12.0 N)")
+                    rospy.loginfo(f"   >> 触发确认序列: {[round(f, 2) for f in recent_forces]} N (连续 {verify_size} 次均 >= 15.0 N)")
                     rospy.loginfo(f"   >> 瞬时接触力 (Inst Fz): {self.current_fy:.2f} N")
                     
                     # 发送 10 次 0 速度，确保驱动层刹停
@@ -268,10 +268,10 @@ class SideContactDrawer:
                 if len(recent_forces) > 5:
                     recent_forces.pop(0)
                     
-                # 屏蔽前 0.5 秒加速抖动
-                if loop_cnt > 20:
-                    if len(recent_forces) >= 5 and all(f >= 1.2 for f in recent_forces): # 在 3mm/s 极慢速下，1.2N 即可稳妥确认接触
-                        rospy.loginfo("🟢 二次接触锁定！")
+                # 屏蔽前 1.0 秒加速抖动
+                if loop_cnt > 40:
+                    if len(recent_forces) >= 8 and all(f >= 2.5 for f in recent_forces): # 门槛提高到 2.5N，并要求连续 8 帧
+                        rospy.loginfo("🟢 二次接触锁定！(>= 2.5N)")
                         for _ in range(10):
                             self.vel_pub.publish(stop_cmd)
                             rospy.sleep(0.005)
@@ -383,14 +383,18 @@ class SideContactDrawer:
         u_ref = raw_waypoints[first_draw_idx]['x']
         v_ref = raw_waypoints[first_draw_idx]['y']
         
-        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹...")
+        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (额外施加 3mm 恒定下压偏置)...")
         aligned_waypoints = []
+        
+        # 核心改动：强行往 +Y 方向（墙面内部）推入 3mm 作为基准面，解决整体位置偏高、接触不足的问题
+        base_y_nominal = contact_pose.position.y + 0.003 
+
         for wp in raw_waypoints:
             du = wp['x'] - u_ref
             dv = wp['y'] - v_ref
             aligned_wp = {
                 'x': contact_pose.position.x - du,
-                'y_nominal': contact_pose.position.y,
+                'y_nominal': base_y_nominal,
                 'z': contact_pose.position.z - dv,
                 'nx': wp['nx'] if 'nx' in wp else 0.0,
                 'ny': wp['ny'] if 'ny' in wp else 0.0,
