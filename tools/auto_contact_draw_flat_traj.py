@@ -356,11 +356,8 @@ class AutoContactDrawer:
                 dx = target_x - self.current_x
                 dy = target_y - self.current_y
                 
-                # 高度主控：计算绝对目标高度
-                if phase not in ['draw', 'touch_down']:
-                    target_z = wp['z_nominal']
-                else:
-                    target_z = wp['z_nominal'] + self.z_offset
+                # 高度主控：严格使用生成的基准平面高度，彻底抛弃力控偏移
+                target_z = wp['z_nominal']
                     
                 dz = target_z - self.current_z
                 
