@@ -347,9 +347,9 @@ class AutoContactDrawer:
             target_x = wp['x']
             target_y = wp['y']
             
-            # 动态刚度：空中极速，落笔放缓
-            k_pos = 1.5 if phase == 'draw' else 3.5
-            k_pos_z = 2.0  # 核心改动：Z轴使用距离/高度刚度控制
+            # 动态刚度：空中极速，落笔放缓 (提升刚度以加快追踪速度)
+            k_pos = 2.5 if phase == 'draw' else 4.0
+            k_pos_z = 8.0  # 大幅提升Z轴刚度，使得遇到不平整或下压时响应更灵敏
             
             # === 阶段 1：以距离和高度为主控的平滑移动 ===
             while not rospy.is_shutdown():
@@ -376,12 +376,12 @@ class AutoContactDrawer:
                 if 0 < abs(v_x) < 0.008 and dist_to_target > 0.0015: v_x = math.copysign(0.008, v_x)
                 if 0 < abs(v_y) < 0.008 and dist_to_target > 0.0015: v_y = math.copysign(0.008, v_y)
                 
-                cmd.twist.linear_x = np.clip(v_x, -0.04, 0.04)
-                cmd.twist.linear_y = np.clip(v_y, -0.04, 0.04)
+                cmd.twist.linear_x = np.clip(v_x, -0.08, 0.08)
+                cmd.twist.linear_y = np.clip(v_y, -0.08, 0.08)
                 
                 # 统一使用目标高度进行 Z 轴跟随（包含画笔悬空和绘制下压的动态 z_offset）
                 dz = target_z - self.current_z
-                cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.025, 0.025)
+                cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.06, 0.06)
                 
                 if phase not in ['draw', 'touch_down']:
                     # 抬笔移动阶段：如果高度差太大，先专门抬高，不进行 XY 移动
