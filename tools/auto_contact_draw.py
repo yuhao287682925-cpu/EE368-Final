@@ -384,11 +384,11 @@ class AutoContactDrawer:
         u_ref_y = raw_waypoints[first_draw_idx]['y']
         u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
         
-        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (额外施加 3mm 恒定下压偏置)...")
+        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (额外施加 1.5mm 恒定下压偏置)...")
         aligned_waypoints = []
         
-        # 核心改动：强行往 -Z 方向（纸面下方）推入 3mm 作为基准面，解决整体位置偏高、接触不足的问题
-        base_z_nominal = contact_pose.position.z - 0.003
+        # 核心改动：强行往 -Z 方向（纸面下方）推入 1.5mm 作为基准面
+        base_z_nominal = contact_pose.position.z - 0.0015
         
         for wp in raw_waypoints:
             aligned_wp = {
