@@ -390,13 +390,13 @@ class AutoContactDrawer:
         u_ref_y = raw_waypoints[first_draw_idx]['y']
         u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
         
-        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹...")
+        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (整体下压 1.5mm)...")
         aligned_waypoints = []
         for wp in raw_waypoints:
             aligned_wp = {
                 'x': contact_pose.position.x + (wp['x'] - u_ref_x),
                 'y': contact_pose.position.y + (wp['y'] - u_ref_y),
-                'z_nominal': contact_pose.position.z + (wp['z_nominal'] - u_ref_z),
+                'z_nominal': contact_pose.position.z - 0.0015 + (wp['z_nominal'] - u_ref_z),
                 'nx': wp['nx'],
                 'ny': wp['ny'],
                 'nz': wp['nz'],
