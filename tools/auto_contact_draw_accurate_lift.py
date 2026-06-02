@@ -430,8 +430,8 @@ class AutoContactDrawer:
             target_y = wp['y']
             
             # 动态刚度：空中极速，落笔放缓
-            k_pos = 1.5 if phase == 'draw' else 3.5
-            k_pos_z = 2.0  # 核心改动：Z轴使用距离/高度刚度控制
+            k_pos = 2.5 if phase == 'draw' else 4.5  # 大幅提升 XY 移动速度刚度
+            k_pos_z = 4.0  # 核心改动：Z轴跟随灵敏度大幅提升
             
             # === 阶段 1：以距离和高度为主控的平滑移动 ===
             while not rospy.is_shutdown():
@@ -458,20 +458,18 @@ class AutoContactDrawer:
                 if 0 < abs(v_x) < 0.008 and dist_to_target > 0.0015: v_x = math.copysign(0.008, v_x)
                 if 0 < abs(v_y) < 0.008 and dist_to_target > 0.0015: v_y = math.copysign(0.008, v_y)
                 
-                cmd.twist.linear_x = np.clip(v_x, -0.04, 0.04)
-                cmd.twist.linear_y = np.clip(v_y, -0.04, 0.04)
+                cmd.twist.linear_x = np.clip(v_x, -0.06, 0.06) # 提升画图速度上限
+                cmd.twist.linear_y = np.clip(v_y, -0.06, 0.06)
+                
+                # 统一使用目标高度进行 Z 轴跟随（包含动态的 z_offset），彻底解除画图时的 Z 轴锁定！
+                dz = target_z - self.current_z
+                cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.040, 0.040) # 提升 Z 轴追随速度上限
                 
                 if phase not in ['draw', 'touch_down']:
-                    # 抬笔移动阶段：用位置误差主控 Z
-                    dz = wp['z_nominal'] - self.current_z
-                    cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.025, 0.025)
+                    # 抬笔移动阶段：如果高度差太大，先专门抬高，不进行 XY 移动
                     if dz > 0.002:
                         cmd.twist.linear_x = 0.0
                         cmd.twist.linear_y = 0.0
-                else:
-                    # 绘制阶段：锁定 Z 高度，防止摩擦力和位置控制器抛起Z导致抬升
-                    cmd.twist.linear_z = 0.0
-                    
                 # 记录高频日志
                 if phase == 'draw':
                     actual_log.append({'x': self.current_x, 'y': self.current_y, 'z': self.current_z})
@@ -493,11 +491,11 @@ class AutoContactDrawer:
                 
                 static_fz = self.current_fz
                 
-                # 辅助力控：微量调整 z_offset
+                # 辅助力控：大幅度提升 z_offset 调整灵敏度
                 if static_fz > 5.0:
-                    self.z_offset += 0.0004  # 压力偏大，微抬 0.4mm，加快释压避免卡死
+                    self.z_offset += 0.0015  # 压力偏大，迅速微抬 1.5mm 释压
                 elif static_fz < 2.5:
-                    self.z_offset -= 0.0010  # 压力偏小（悬空风险），快速下压 1.0mm
+                    self.z_offset -= 0.0025  # 压力偏小，迅速下压 2.5mm 寻面
                     
                 # 上限 +0.8mm：居中，能决流卡阻又不至于明显悬空；下限 -10mm：应对纸箱塌陷
                 self.z_offset = np.clip(self.z_offset, -0.010, 0.0008)
