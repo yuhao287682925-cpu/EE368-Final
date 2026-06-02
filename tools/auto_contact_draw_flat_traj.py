@@ -63,6 +63,7 @@ class AutoContactDrawer:
         
         # 零点力校准状态
         self.allow_drift_calibration = False
+        self.z_offset = 0.0  # 恢复：用于绘制过程中的辅助动态高度补偿
         self.fz_bias = 0.0
         self.wrist_torque_bias = 0.0
         self.calibration_samples = []
@@ -356,8 +357,11 @@ class AutoContactDrawer:
                 dx = target_x - self.current_x
                 dy = target_y - self.current_y
                 
-                # 高度主控：严格使用生成的基准平面高度，彻底抛弃力控偏移
-                target_z = wp['z_nominal']
+                # 高度主控：基准高度 + 动态力控补偿偏移
+                if phase not in ['draw', 'touch_down']:
+                    target_z = wp['z_nominal']
+                else:
+                    target_z = wp['z_nominal'] + self.z_offset
                     
                 dz = target_z - self.current_z
                 
@@ -398,12 +402,23 @@ class AutoContactDrawer:
                 self.vel_pub.publish(cmd)
                 rate.sleep()
                 
-            # === 阶段 2：刹车静止，不再进行高度补偿偏移以保持基准面绝对水平 ===
+            # === 阶段 2：刹车静止，并进行适当的辅助力控高度补偿 ===
             if phase in ['draw', 'touch_down'] and (i % 2 == 0 or phase == 'touch_down'):
                 stop_cmd = TwistCommand()
                 stop_cmd.reference_frame = 3
                 self.vel_pub.publish(stop_cmd)
                 rospy.sleep(0.025)
+                
+                static_fz = self.current_fz
+                
+                # 动态高度补偿：不要写死，根据受力适当微调抬升/下压
+                if static_fz > 6.0:
+                    self.z_offset += 0.0004  # 压力过大，微抬 0.4mm 释压
+                elif static_fz < 1.0:
+                    self.z_offset -= 0.0004  # 压力过小有悬空风险，微降 0.4mm 追踪
+                    
+                # 施加严格限幅：最多抬升 1.5mm，最多下压 3mm，防止轨迹严重漂移失控
+                self.z_offset = np.clip(self.z_offset, -0.003, 0.0015)
                 
             if i % 5 == 0 or i == len(aligned_waypoints) - 1:
                 rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fz: {self.current_fz:.2f}N | 高度 Z: {self.current_z:.4f}m")
