@@ -263,11 +263,11 @@ class AutoContactDrawer:
             
             rospy.loginfo(f"📍 寻面接触起点锁定 (基于第一阶段 15N 深度): X={current_pose.position.x:.4f}, Y={current_pose.position.y:.4f}, Z={current_pose.position.z:.4f}")
             
-            rospy.loginfo("⬆️ 执行安全微抬：物理缓慢向上 4mm 释放扎面应力...")
+            rospy.loginfo("⬆️ 执行安全微抬：物理缓慢向上 2mm 释放扎面应力...")
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
             lift_cmd.twist.linear_z = 0.005 # 5mm/s 缓慢抬升，防止猛烈回弹
-            for _ in range(32): # 抬升约 0.8秒，即 4mm
+            for _ in range(16): # 抬升约 0.4秒，即 2mm
                 self.vel_pub.publish(lift_cmd)
                 rospy.sleep(0.025)
             
