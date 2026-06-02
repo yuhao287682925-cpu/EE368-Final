@@ -243,18 +243,6 @@ class AutoContactDrawer:
             
             rospy.loginfo(f"📍 寻面接触起点锁定 (基于第一阶段 15N 深度): X={current_pose.position.x:.4f}, Y={current_pose.position.y:.4f}, Z={current_pose.position.z:.4f}")
             
-            rospy.loginfo("⬆️ 执行安全微抬：向上 5mm 以便无摩擦地移动到起笔点...")
-            lift_cmd = TwistCommand()
-            lift_cmd.reference_frame = 3
-            lift_cmd.twist.linear_z = 0.010 # 10mm/s 抬升
-            for _ in range(20): # 抬升约 0.5秒，即 5mm
-                self.vel_pub.publish(lift_cmd)
-                rospy.sleep(0.025)
-            
-            for _ in range(5):
-                self.vel_pub.publish(stop_cmd)
-                rospy.sleep(0.025)
-                
             return current_pose
         else:
             raise RuntimeError("寻面程序异常终止")
@@ -349,11 +337,11 @@ class AutoContactDrawer:
         u_ref_y = raw_waypoints[first_draw_idx]['y']
         u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
         
-        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹...")
+        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (整体上移 2mm 释压)...")
         aligned_waypoints = []
         
-        # 因为寻面直接采用 15N 深度，笔尖已确实压入，故此处不再施加额外偏置
-        base_z_nominal = contact_pose.position.z
+        # 将 15N 强压点向上抬起 2mm 作为最终理论画板平面，以获得轻柔笔触
+        base_z_nominal = contact_pose.position.z + 0.002
         
         for wp in raw_waypoints:
             aligned_wp = {
