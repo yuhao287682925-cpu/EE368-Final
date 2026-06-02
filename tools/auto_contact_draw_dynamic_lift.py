@@ -431,6 +431,10 @@ class AutoContactDrawer:
                 cmd = TwistCommand()
                 cmd.reference_frame = 3
                 
+                dist_to_target = math.hypot(dx, dy)
+                if dist_to_target < 0.0015: 
+                    break
+                
                 v_x = k_pos * dx
                 v_y = k_pos * dy
                 if 0 < abs(v_x) < 0.008 and dist_to_target > 0.0015: v_x = math.copysign(0.008, v_x)
