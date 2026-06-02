@@ -235,8 +235,8 @@ class AutoContactDrawer:
             rate.sleep()
         
         if contact_detected:
-            rospy.loginfo("⬆️ 执行就近重力校准：闭环精确向上微抬 7mm 脱离接触...")
-            target_lift_z = self.current_z + 0.007
+            rospy.loginfo("⬆️ 执行就近重力校准：闭环精确向上微抬 6mm 脱离接触...")
+            target_lift_z = self.current_z + 0.006
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
             
