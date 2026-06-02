@@ -235,7 +235,15 @@ class AutoContactDrawer:
             rate.sleep()
         
         if contact_detected:
-            rospy.loginfo("⬆️ 执行就近重力校准：微抬 3mm 脱离接触...")
+            # 使用高精度底层正运动学估算的绝对坐标
+            current_pose = Pose()
+            current_pose.position.x = self.current_x
+            current_pose.position.y = self.current_y
+            current_pose.position.z = self.current_z
+            
+            rospy.loginfo(f"📍 寻面接触起点锁定 (基于第一阶段 15N 深度): X={current_pose.position.x:.4f}, Y={current_pose.position.y:.4f}, Z={current_pose.position.z:.4f}")
+            
+            rospy.loginfo("⬆️ 执行安全微抬：向上 5mm 以便无摩擦地移动到起笔点...")
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
             lift_cmd.twist.linear_z = 0.010 # 10mm/s 抬升
@@ -247,49 +255,6 @@ class AutoContactDrawer:
                 self.vel_pub.publish(stop_cmd)
                 rospy.sleep(0.025)
                 
-            rospy.loginfo("⏸️ 重新执行高精度就近零点校准 (0.8秒)...")
-            self.calibrated = False
-            self.calibration_samples = []
-            self.torque_calibration_samples = []
-            rospy.sleep(0.8)
-            
-            while not self.calibrated and not rospy.is_shutdown():
-                rospy.sleep(0.1)
-                
-            rospy.loginfo("⬇️ 二次轻柔下探...")
-            down_cmd.twist.linear_z = -0.003 # 极慢速下探 3mm/s，防止第一下过深
-            recent_forces.clear()
-            contact_detected_again = False
-            loop_cnt = 0
-            
-            while not rospy.is_shutdown():
-                loop_cnt += 1
-                recent_forces.append(self.current_fz)
-                if len(recent_forces) > 5:
-                    recent_forces.pop(0)
-                    
-                # 屏蔽前 1.0 秒加速抖动
-                if loop_cnt > 40:
-                    if len(recent_forces) >= 8 and all(f >= 2.5 for f in recent_forces): # 门槛提高到 2.5N，并要求连续 8 帧
-                        rospy.loginfo("🟢 二次接触锁定！(>= 2.5N)")
-                        for _ in range(10):
-                            self.vel_pub.publish(stop_cmd)
-                            rospy.sleep(0.005)
-                        contact_detected_again = True
-                        break
-                        
-                self.vel_pub.publish(down_cmd)
-                rate.sleep()
-                
-            rospy.sleep(0.5) # 等待彻底静止
-            
-            # 使用高精度底层正运动学估算的绝对坐标
-            current_pose = Pose()
-            current_pose.position.x = self.current_x
-            current_pose.position.y = self.current_y
-            current_pose.position.z = self.current_z
-            
-            rospy.loginfo(f"📍 寻面接触起点锁定: X={current_pose.position.x:.4f}, Y={current_pose.position.y:.4f}, Z={current_pose.position.z:.4f}")
             return current_pose
         else:
             raise RuntimeError("寻面程序异常终止")
@@ -384,11 +349,11 @@ class AutoContactDrawer:
         u_ref_y = raw_waypoints[first_draw_idx]['y']
         u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
         
-        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (额外施加 1.5mm 恒定下压偏置)...")
+        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹...")
         aligned_waypoints = []
         
-        # 核心改动：强行往 -Z 方向（纸面下方）推入 1.5mm 作为基准面
-        base_z_nominal = contact_pose.position.z - 0.0015
+        # 因为寻面直接采用 15N 深度，笔尖已确实压入，故此处不再施加额外偏置
+        base_z_nominal = contact_pose.position.z
         
         for wp in raw_waypoints:
             aligned_wp = {
