@@ -210,7 +210,7 @@ class AutoContactDrawer:
         
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 3 # 基座坐标系
-        down_cmd.twist.linear_z = -0.005 # -5mm/s 慢速向下，大幅减少物理挤压产生的回弹积压
+        down_cmd.twist.linear_z = -0.010 # -10mm/s 向下，避免速度过低导致底层死区停顿
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3

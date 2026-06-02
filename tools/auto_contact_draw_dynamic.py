@@ -190,7 +190,7 @@ class AutoContactDrawer:
         
         down_cmd = TwistCommand()
         down_cmd.reference_frame = 3 # 基座坐标系
-        down_cmd.twist.linear_z = -0.010 # -10mm/s 向下，放慢速度以配合更长的确认窗口
+        down_cmd.twist.linear_z = -0.010 # -10mm/s 向下，避免速度过低导致底层死区停顿确认窗口
         
         stop_cmd = TwistCommand()
         stop_cmd.reference_frame = 3
