@@ -498,7 +498,7 @@ class SideContactDrawer:
                 self.y_offset = np.clip(self.y_offset, -0.0008, 0.010)
                 
             if i % 5 == 0 or i == len(aligned_waypoints) - 1:
-                rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fy: {self.current_fy:.2f}N | 深度 Y: {self.current_z:.4f}m")
+                rospy.loginfo(f"点进度: {i+1}/{len(aligned_waypoints)} | 阶段: {phase} | 静态Fy: {self.current_fy:.2f}N | 深度 Y: {self.current_y:.4f}m")
         
         # 绘制结束
         rospy.loginfo("🛑 绘制到达终点，稍作停顿以平息抖动...")
