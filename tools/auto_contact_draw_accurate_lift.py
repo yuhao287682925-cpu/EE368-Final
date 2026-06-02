@@ -262,8 +262,8 @@ class AutoContactDrawer:
             while not self.calibrated and not rospy.is_shutdown():
                 rospy.sleep(0.1)
                 
-            rospy.loginfo("⬇️ 二次轻柔下探...")
-            down_cmd.twist.linear_z = -0.003 # 极慢速下探 3mm/s，防止第一下过深
+            rospy.loginfo("⬇️ 二次稳健下探...")
+            down_cmd.twist.linear_z = -0.005 # 提升到 5mm/s，防止过慢导致底层电机静摩擦严重抖动
             recent_forces.clear()
             contact_detected_again = False
             loop_cnt = 0
@@ -274,9 +274,9 @@ class AutoContactDrawer:
                 if len(recent_forces) > 5:
                     recent_forces.pop(0)
                     
-                # 屏蔽前 0.5 秒加速抖动
-                if loop_cnt > 20:
-                    if len(recent_forces) >= 5 and all(f >= 6.0 for f in recent_forces): # 大幅提升二次探面阈值至 6.0N，彻底杜绝悬空误判
+                # 屏蔽前 0.75 秒加速抖动，避开静摩擦峰值
+                if loop_cnt > 30:
+                    if len(recent_forces) >= 5 and all(f >= 12.0 for f in recent_forces): # 将二次阈值拉升至 12.0N，直接压过所有抖动噪声
                         rospy.loginfo("🟢 二次接触锁定！")
                         for _ in range(10):
                             self.vel_pub.publish(stop_cmd)
