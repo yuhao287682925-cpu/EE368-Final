@@ -40,21 +40,23 @@ raw_fz = tool_force[2]
 self.current_fz = abs(raw_fz - self.fz_bias)
 ```
 
-## Slide 4: 顶面绘制与安全控制 (Top-Down Drawing)
-- **主要文件**: `tools/auto_contact_draw.py`
-- **核心思想**: 将 2D 轨迹映射到水平 XY 面，通过实时监测 Z 轴法向阻力进行“安全泄压”，避免机械臂卡死。
-- **核心代码片段**:
+## Slide 4: 顶面绘制与双重探面寻面策略 (Top-Down Drawing & Double-Probe)
+- **主要文件**: `tools/auto_contact_draw_with_log.py` / `tools/auto_contact_draw_flat_traj.py`
+- **核心思想（与上一版对比）**:
+  - **上一版方案**：采用单次粗探 + 画图时连续动态泄压 (`z_offset_relief`)。存在问题：控制频繁触发导致目标轨迹 Z 轴漂移，且易产生“锯齿状”震荡。
+  - **本版全新方案**：抛弃了画图中的动态高度微调，采用**“双重探面 + 纯位置死区绘制”**。先通过重压 (12N/15N) 克服初始形变，随后物理微抬并彻底悬空去皮，最后通过极慢速轻触 (1.2N) 精准锁定真实零点，最后基于该零点进行绝对平稳的位置跟随。
+- **核心代码片段 (不再进行力控偏移，锁定平面)**:
 ```python
-# 动态法向安全泄压策略 (Relief Strategy)
-if wp['phase'] in ['draw', 'touch_down']:
-    if fz_filtered > 15.0 or stuck_cnt > 10:
-        z_offset_relief += 0.005 * dt  # 阻力过大，向 +Z 方向退缩
-    elif fz_filtered < 8.0:
-        z_offset_relief -= 0.002 * dt  # 阻力变小，恢复下压
-        
-# 维持固定接触深度
-depth_offset = fixed_depth - z_offset_relief
-target_z = contact_z - depth_offset 
+# 动态轨迹原点对齐 (彻底废弃了画图中的辅助 z_offset 漂移)
+aligned_waypoints = []
+for wp in raw_waypoints:
+    aligned_wp = {
+        'x': contact_pose.position.x + (wp['x'] - u_ref_x),
+        'y': contact_pose.position.y + (wp['y'] - u_ref_y),
+        # 严格基于二次高精度探面的接触点 Z 高度生成后续轨迹
+        'z_nominal': contact_pose.position.z + (wp['z_nominal'] - u_ref_z)
+    }
+    aligned_waypoints.append(aligned_wp)
 ```
 
 ## Slide 5: 侧边绘制 - 姿态变换与逆向重映射 (Side-Wall Drawing)
