@@ -46,6 +46,7 @@ roslaunch kortex_driver kortex_driver.launch arm:="gen3_lite" ip_address:="192.1
 ```bash
 python3 tools/force_z_monitor.py
 ```
+
 *(测试过程中，如出现发热漂移，可在该终端按 **[Enter 键]** 随时在线归零。)*
 
 ### 第三步：执行自动对刀与定深绘制 (新终端)
@@ -53,11 +54,14 @@ python3 tools/force_z_monitor.py
 我们推荐使用带有日志与误差分析的最新 `_with_log` 脚本。传递轨迹 CSV 文件，启动相应主程序：
 
 **选项 A：在水平桌面/顶面绘制**
+
 ```bash
+python3 tools/align_wrist.py
 python3 tools/auto_contact_draw_with_log.py trajectory/star_8cm.csv
 ```
 
 **选项 B：在垂直侧面（+Y法向）绘制**
+
 ```bash
 # 必须先执行姿态对齐，强制转动手腕水平朝向 +Y
 python3 tools/align_wrist_side.py
@@ -79,9 +83,9 @@ python3 tools/side_contact_draw_with_log.py trajectory/star_8cm.csv
 
 如需根据不同的笔触、画笔弹性或纸箱硬度微调表现，可在 `tools/auto_contact_draw.py` 中修改：
 
-| 核心控制参数 | 默认值 | 作用说明 |
-| :--- | :--- | :--- |
-| `max_z_offset` | `+0.0008` (m) | 全局最大允许的上抬释压上限（0.8mm），防止因力矩估算误差导致的彻底悬空。 |
-| `min_z_offset` | `-0.010` (m) | 遇到纸箱塌陷时的最大下探追踪深度（10mm）。 |
-| 释压微调步长 | `+0.0004` (m) | 停顿期单次力过大时的上抬补偿量。 |
-| 巡航位置刚度 `k_pos` | `1.5` | 绘制状态下 XY 轴向目标点逼近的速度比例增益。 |
+| 核心控制参数           | 默认值          | 作用说明                                                                |
+| :--------------------- | :-------------- | :---------------------------------------------------------------------- |
+| `max_z_offset`       | `+0.0008` (m) | 全局最大允许的上抬释压上限（0.8mm），防止因力矩估算误差导致的彻底悬空。 |
+| `min_z_offset`       | `-0.010` (m)  | 遇到纸箱塌陷时的最大下探追踪深度（10mm）。                              |
+| 释压微调步长           | `+0.0004` (m) | 停顿期单次力过大时的上抬补偿量。                                        |
+| 巡航位置刚度 `k_pos` | `1.5`         | 绘制状态下 XY 轴向目标点逼近的速度比例增益。                            |
