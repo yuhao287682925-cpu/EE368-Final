@@ -461,16 +461,15 @@ class AutoContactDrawer:
                 cmd.twist.linear_x = np.clip(v_x, -0.04, 0.04)
                 cmd.twist.linear_y = np.clip(v_y, -0.04, 0.04)
                 
+                # 统一使用目标高度进行 Z 轴跟随（包含画笔悬空和绘制下压的动态 z_offset）
+                dz = target_z - self.current_z
+                cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.025, 0.025)
+                
                 if phase not in ['draw', 'touch_down']:
-                    # 抬笔移动阶段：用位置误差主控 Z
-                    dz = wp['z_nominal'] - self.current_z
-                    cmd.twist.linear_z = np.clip(k_pos_z * dz, -0.025, 0.025)
+                    # 抬笔移动阶段：如果高度差太大，先专门抬高，不进行 XY 移动
                     if dz > 0.002:
                         cmd.twist.linear_x = 0.0
                         cmd.twist.linear_y = 0.0
-                else:
-                    # 绘制阶段：锁定 Z 高度，防止摩擦力和位置控制器抛起Z导致抬升
-                    cmd.twist.linear_z = 0.0
                     
                 # 记录高频日志
                 if phase == 'draw':
