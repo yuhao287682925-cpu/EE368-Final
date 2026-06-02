@@ -276,7 +276,7 @@ class AutoContactDrawer:
                     
                 # 屏蔽前 0.5 秒加速抖动
                 if loop_cnt > 20:
-                    if len(recent_forces) >= 5 and all(f >= 1.2 for f in recent_forces): # 在 3mm/s 极慢速下，1.2N 即可稳妥确认接触
+                    if len(recent_forces) >= 5 and all(f >= 6.0 for f in recent_forces): # 大幅提升二次探面阈值至 6.0N，彻底杜绝悬空误判
                         rospy.loginfo("🟢 二次接触锁定！")
                         for _ in range(10):
                             self.vel_pub.publish(stop_cmd)
@@ -390,13 +390,13 @@ class AutoContactDrawer:
         u_ref_y = raw_waypoints[first_draw_idx]['y']
         u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
         
-        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (整体下压 2.5mm)...")
+        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹...")
         aligned_waypoints = []
         for wp in raw_waypoints:
             aligned_wp = {
                 'x': contact_pose.position.x + (wp['x'] - u_ref_x),
                 'y': contact_pose.position.y + (wp['y'] - u_ref_y),
-                'z_nominal': contact_pose.position.z - 0.0025 + (wp['z_nominal'] - u_ref_z),
+                'z_nominal': contact_pose.position.z + (wp['z_nominal'] - u_ref_z),
                 'nx': wp['nx'],
                 'ny': wp['ny'],
                 'nz': wp['nz'],
