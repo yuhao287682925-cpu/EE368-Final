@@ -47,10 +47,6 @@ def get_orientation_for_normal(nx, ny, nz, default_rpy_deg=(0.0, 180.0, 0.0)):
     q = r_final.as_quat()
     return Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 
-# 接触状态机状态常量
-FREE_SPACE = 0
-SOFT_CONTACT = 1
-HARD_CONTACT = 2
 
 class AutoContactDrawer:
     def __init__(self):
@@ -66,25 +62,7 @@ class AutoContactDrawer:
         self.arm_model = NLinkArm(dh_params_list)
         
         # 接触状态机初始化
-        self.state = FREE_SPACE
-        self.state_counter = 0 # 状态迟滞校验帧计数器
-        
-        # 核心力控与对刀判定参数
-        self.base_target_force = 6.0  # 标称绘制压力 6.0N
-        self.target_force = 6.0       # 动态目标接触力 (可衰减防卡阻)
-        self.contact_threshold = 4.0  # 接触与力控激活判定阈值 4.0N
-        self.wrist_torque_threshold = 0.25 # 末端关节 (第 6 关节) 扭矩接触跳变阈值 0.25 N.m (调高以防止频繁误触发抬升)
-        
-        self.kp_up = 0.005            # 过度按压抬升增益 (快速向上抬)
-        self.kd_up = 0.001
-        self.kp_down = 0.0008         # 接触不足下压增益 (缓慢向下压)
-        self.kd_down = 0.0001
-        
-        self.max_step = 0.01          # 单周期最大位移微调量
-        self.z_offset = 0.0           # 虚拟 Z 轴力控累积位移 (用于防飞车限位)
-        self.max_z_offset = 0.008     # 最大抬升位移限制 (0.8 cm，防止悬空)
-        self.min_z_offset = -0.03     # 最大下压位移限制 (-3.0 cm)
-        
+
         # 零点力校准状态
         self.fz_bias = 0.0
         self.wrist_torque_bias = 0.0
@@ -300,61 +278,6 @@ class AutoContactDrawer:
         else:
             raise RuntimeError("寻面程序异常终止")
 
-    def update_force_control(self, fz_val, state, dt=0.025):
-        """
-        基于接触状态机状态的高级速度型力控外环与 Leaky 积分器
-        """
-        if not self.calibrated:
-            self.z_offset = 0.0
-            self.prev_force_error = 0.0
-            return 0.0, 0.0
-        
-        v_z_comp = 0.0
-        
-        if state == FREE_SPACE:
-            # 1. 悬空状态下，z_offset 以较快的漏损系数平滑收敛归零，不计算力控速度
-            self.z_offset = 0.95 * self.z_offset
-            self.prev_force_error = 0.0
-            
-        elif state == SOFT_CONTACT:
-            # 2. 软接触状态下，给定极慢的向下贴合速度，漏损系数也设为 0.95 限制偏置
-            v_z_comp = -0.002
-            self.z_offset = 0.95 * self.z_offset + v_z_comp * dt
-            self.prev_force_error = 0.0
-            
-        elif state == HARD_CONTACT:
-            # 3. 稳定接触状态下，执行非对称 PD 控制
-            force_error = self.target_force - fz_val
-            
-            # 【水平力矩抬升判定 (已根据要求完全禁用)】
-            # 不再使用手腕扭矩干预控制，仅依靠 Z 轴纯压力 (Fz)
-            d_error = (force_error - self.prev_force_error) / dt if dt > 0 else 0.0
-            self.prev_force_error = force_error
-            
-            if force_error < -1.0:
-                # 超过目标力 1.0N 时才允许快速抬升，极力避免因摩擦等干扰导致误判悬空
-                rospy.loginfo_throttle(0.5, f"⬆️ 接触压力过大 (Fz={fz_val:.2f}N > 目标{self.target_force:.1f}N)，执行常规抬升")
-                v_z_comp = -(self.kp_up * (force_error + 1.0) + self.kd_up * d_error)
-            elif force_error < 0:
-                # 处于 [目标力, 目标力+1.0N] 的冗余过度按压区间内，不抬升，维持当前高度
-                v_z_comp = 0.0
-            else:
-                # 压力不足，缓慢下压
-                v_z_comp = -(self.kp_down * force_error + self.kd_down * d_error)
-                
-            # 速度硬限幅 8mm/s
-            v_z_comp = np.clip(v_z_comp, -0.008, 0.008)
-            
-            # Leaky 积分更新，漏损系数 0.995
-            self.z_offset = 0.995 * self.z_offset + v_z_comp * dt
-            
-        # 触发防飞车保护（限制 z_offset 范围）
-        self.z_offset = np.clip(self.z_offset, self.min_z_offset, self.max_z_offset)
-        
-        self.z_offset_pub.publish(Float64(self.z_offset))
-        
-        return self.z_offset, v_z_comp
-
     def execute_and_draw(self, csv_file):
         """
         自动寻面对刀对齐，随后高频速度伺服绘制
@@ -411,11 +334,6 @@ class AutoContactDrawer:
         rate = rospy.Rate(40) # 40Hz
         dt = 0.025
         
-        # 将接触状态机、滤波器缓存外提，实现跨点连续状态管理
-        self.state = FREE_SPACE
-        self.state_counter = 0
-        draw_force_window = []
-        draw_window_size = 4
         
         # 轨迹日志
         actual_log = []
