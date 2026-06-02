@@ -213,8 +213,8 @@ class AutoContactDrawer:
             if loop_cnt % 15 == 0:
                 rospy.loginfo(f"⏳ 正在直线下探... 瞬时 Fz: {self.current_fz:.2f} N | 缓存序列: {[round(f, 2) for f in recent_forces]}")
             
-            # 起步前 2 秒 (80 个周期) 内屏蔽判定，避开加速及克服静摩擦瞬间的电机电流剧烈抖动
-            if loop_cnt > 80:
+            # 起步前 0.5 秒 (20 个周期) 内屏蔽判定，避开加速瞬间的电机抖动
+            if loop_cnt > 20:
                 # 只有当缓存数足够，且最后连续 verify_size 个采样周期都大于等于 15.0 N 时，才判定触及表面
                 if len(recent_forces) >= verify_size and all(f >= 15.0 for f in recent_forces):
                     rospy.loginfo("🟢 判定触及纸箱表面！")
