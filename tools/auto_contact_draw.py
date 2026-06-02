@@ -243,11 +243,11 @@ class AutoContactDrawer:
             
             rospy.loginfo(f"📍 寻面接触起点锁定 (基于第一阶段 15N 深度): X={current_pose.position.x:.4f}, Y={current_pose.position.y:.4f}, Z={current_pose.position.z:.4f}")
             
-            rospy.loginfo("⬆️ 执行安全微抬：物理向上 3mm 释放扎面应力...")
+            rospy.loginfo("⬆️ 执行安全微抬：物理向上 2mm 释放扎面应力...")
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
             lift_cmd.twist.linear_z = 0.010 # 10mm/s 抬升
-            for _ in range(12): # 抬升约 0.3秒，即 3mm
+            for _ in range(8): # 抬升约 0.2秒，即 2mm
                 self.vel_pub.publish(lift_cmd)
                 rospy.sleep(0.025)
             
@@ -349,11 +349,11 @@ class AutoContactDrawer:
         u_ref_y = raw_waypoints[first_draw_idx]['y']
         u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
         
-        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (整体上移 3mm 释压)...")
+        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (整体上移 2mm 释压)...")
         aligned_waypoints = []
         
-        # 将 15N 强压点向上抬起 3mm 作为最终理论画板平面，以获得轻柔笔触
-        base_z_nominal = contact_pose.position.z + 0.003
+        # 将 15N 强压点向上抬起 2mm 作为最终理论画板平面，以获得轻柔笔触
+        base_z_nominal = contact_pose.position.z + 0.002
         
         for wp in raw_waypoints:
             aligned_wp = {
@@ -401,24 +401,14 @@ class AutoContactDrawer:
                 if phase not in ['draw', 'touch_down']:
                     target_z = wp['z_nominal']
                 else:
-                    # ===== 新增：水平阻力动态避障上抬逻辑 =====
-                    dynamic_lift = 0.0
-                    v_target_x = target_x - self.current_x
-                    v_target_y = target_y - self.current_y
-                    dist = math.hypot(v_target_x, v_target_y)
+                    target_z = wp['z_nominal'] + self.z_offset
                     
-                    if dist > 0.001:
-                        ux = v_target_x / dist
-                        uy = v_target_y / dist
-                        f_push = self.current_fx * ux + self.current_fy * uy
-                        
-                        if f_push > 12.0:
-                            dynamic_lift = min((f_push - 12.0) * 0.0003, 0.0015)
-                            if loop_cnt % 10 == 0:
-                                rospy.logwarn(f"⚠️ 遭遇较大运动阻力 (F_push: {f_push:.2f}N)！动态上抬 {dynamic_lift*1000:.1f}mm 避障")
-                    
-                    target_z = wp['z_nominal'] + self.z_offset + dynamic_lift
-                    
+                dz = target_z - self.current_z
+                
+                dist_to_target = math.hypot(dx, dy)
+                if dist_to_target < 0.0015: 
+                    break
+                
                 cmd = TwistCommand()
                 cmd.reference_frame = 3
                 
