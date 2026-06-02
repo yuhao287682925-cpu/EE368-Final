@@ -61,9 +61,8 @@ class AutoContactDrawer:
                                    [-math.pi/2, 0, 235/1000, 0-math.pi/2]])
         self.arm_model = NLinkArm(dh_params_list)
         
-        # 接触状态机初始化
-
         # 零点力校准状态
+        self.allow_drift_calibration = False
         self.fz_bias = 0.0
         self.wrist_torque_bias = 0.0
         self.calibration_samples = []
@@ -138,8 +137,8 @@ class AutoContactDrawer:
         self.current_fz = abs(raw_fz - self.fz_bias)
         self.wrist_torque = abs(raw_wrist_torque - self.wrist_torque_bias)
         
-        # 在空闲悬空且静止状态下进行温漂自动去皮（超低通偏置更新）
-        if self.state == FREE_SPACE and self.is_static and self.current_fz < 2.0:
+        # 在允许静止去皮的情况下进行温漂自动去皮（超低通偏置更新）
+        if self.allow_drift_calibration and self.is_static and self.current_fz < 2.0:
             self.fz_bias = 0.9995 * self.fz_bias + 0.0005 * raw_fz
             self.wrist_torque_bias = 0.9995 * self.wrist_torque_bias + 0.0005 * raw_wrist_torque
             self.current_fz = abs(raw_fz - self.fz_bias)
@@ -152,7 +151,7 @@ class AutoContactDrawer:
         动作 1：全自动下探寻面。控制机械臂以 5mm/s 速度向下移动，直到双阈值判定接触时停机。
         """
         rospy.loginfo("🚀 开始自动下探寻面程序...")
-        self.state = FREE_SPACE  # 强制处于 FREE_SPACE 以使去皮逻辑生效
+        self.allow_drift_calibration = True  # 允许空闲去皮逻辑生效
         
         # 强迫机械臂在启动前静止 1.5 秒，重新去皮校零，完全平息之前移动带来的残余力矩
         rospy.loginfo("⏸️ 机械臂静止中 (1.5秒)，正在平息关节残留力矩并执行高精度校零...")
@@ -240,7 +239,8 @@ class AutoContactDrawer:
             while not self.calibrated and not rospy.is_shutdown():
                 rospy.sleep(0.1)
                 
-            rospy.loginfo("⬇️ 二次稳健下探...")
+            rospy.loginfo("⬇️ 二次轻柔下探...")
+            self.allow_drift_calibration = False # 下探过程禁止动态去皮
             down_cmd.twist.linear_z = -0.005 # 提升到 5mm/s，防止过慢导致底层电机静摩擦严重抖动
             recent_forces.clear()
             contact_detected_again = False
