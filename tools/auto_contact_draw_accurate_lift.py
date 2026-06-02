@@ -235,8 +235,8 @@ class AutoContactDrawer:
             rate.sleep()
         
         if contact_detected:
-            rospy.loginfo("⬆️ 执行就近重力校准：闭环精确向上微抬 6mm 脱离接触...")
-            target_lift_z = self.current_z + 0.006
+            rospy.loginfo("⬆️ 执行就近重力校准：闭环精确向上微抬 5mm 脱离接触...")
+            target_lift_z = self.current_z + 0.005
             lift_cmd = TwistCommand()
             lift_cmd.reference_frame = 3
             
@@ -390,13 +390,13 @@ class AutoContactDrawer:
         u_ref_y = raw_waypoints[first_draw_idx]['y']
         u_ref_z = raw_waypoints[first_draw_idx]['z_nominal']
         
-        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (整体下压 1.5mm)...")
+        rospy.loginfo("🔄 正在基于实际物理接触点在线重生成轨迹 (整体下压 2.5mm)...")
         aligned_waypoints = []
         for wp in raw_waypoints:
             aligned_wp = {
                 'x': contact_pose.position.x + (wp['x'] - u_ref_x),
                 'y': contact_pose.position.y + (wp['y'] - u_ref_y),
-                'z_nominal': contact_pose.position.z - 0.0015 + (wp['z_nominal'] - u_ref_z),
+                'z_nominal': contact_pose.position.z - 0.0025 + (wp['z_nominal'] - u_ref_z),
                 'nx': wp['nx'],
                 'ny': wp['ny'],
                 'nz': wp['nz'],
